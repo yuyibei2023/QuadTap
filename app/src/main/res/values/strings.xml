@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">四格自动校准</string>
+    <string name="accessibility_description">识别当前页面的选项位置，并提供可移动的四格悬浮操作面板。仅在你主动点击面板时执行点击。</string>
+</resources>
