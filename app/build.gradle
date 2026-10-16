@@ -1,5 +1,18 @@
 plugins { id 'com.android.application' }
 
+// 正式签名所需的四个值从环境变量读取（CI 里由 GitHub Secrets 注入）。
+// 任何一个缺失就跳过签名配置 —— 构建照常可用，只是产出 debug 签名的 APK。
+def keystorePath = System.getenv('QUADTAP_KEYSTORE_FILE')
+def keystorePassword = System.getenv('QUADTAP_KEYSTORE_PASSWORD')
+def keyAliasName = System.getenv('QUADTAP_KEY_ALIAS')
+def keyPasswordValue = System.getenv('QUADTAP_KEY_PASSWORD')
+
+def hasReleaseSigning = keystorePath != null && !keystorePath.isEmpty()
+        && keystorePassword != null && !keystorePassword.isEmpty()
+        && keyAliasName != null && !keyAliasName.isEmpty()
+        && keyPasswordValue != null && !keyPasswordValue.isEmpty()
+        && file(keystorePath).exists()
+
 android {
     namespace 'com.study.quadtap'
     compileSdk 35
@@ -16,6 +29,26 @@ android {
         // 代码里用了 lambda 与方法引用，显式声明避免依赖 AGP 的默认值。
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    if (hasReleaseSigning) {
+        signingConfigs {
+            release {
+                storeFile file(keystorePath)
+                storePassword keystorePassword
+                keyAlias keyAliasName
+                keyPassword keyPasswordValue
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
     }
 }
 

@@ -75,7 +75,10 @@ QuadTap 是一个 Android 悬浮点击与选项位置识别原型。它把屏幕
 ## 下载
 
 已发布的版本见 [Releases](https://github.com/yuyibei2023/QuadTap/releases)。
-每个版本都会附带 `QuadTap-v<版本>-debug.apk` 和 `SHA256SUMS.txt` 校验文件。
+每个版本附带 APK 和 `SHA256SUMS.txt` 校验文件，
+文件名是 `QuadTap-v<版本>-release.apk`（已配正式签名）或 `QuadTap-v<版本>-debug.apk`（未配签名时回退）。
+
+关于正式签名是什么、怎么配，见 [`docs/SIGNING.md`](docs/SIGNING.md)。
 
 打标签即可自动发布：
 

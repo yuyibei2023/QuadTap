@@ -58,17 +58,74 @@ jobs:
             echo "::warning title=版本号不一致::标签为 $GITHUB_REF_NAME，但 app/build.gradle 里 versionName 是 $GRADLE_VERSION，装出来的应用会显示 $GRADLE_VERSION"
           fi
 
-      - name: Build debug APK
-        run: gradle --no-daemon assembleDebug --stacktrace
+      - name: Restore signing keystore (only when secrets exist)
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.QUADTAP_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.QUADTAP_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.QUADTAP_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.QUADTAP_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "未配置签名密钥，本次构建 debug 签名的 APK（仅供自用测试）。"
+            exit 0
+          fi
+          for pair in "密钥密码:$KEYSTORE_PASSWORD" "别名:$KEY_ALIAS" "别名密码:$KEY_PASSWORD"; do
+            if [ -z "${pair#*:}" ]; then
+              echo "::error title=签名配置不完整::四个 Secrets 必须全部填写，缺少「${pair%%:*}」"
+              exit 1
+            fi
+          done
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/quadtap-release.jks"
+          {
+            echo "QUADTAP_KEYSTORE_FILE=$RUNNER_TEMP/quadtap-release.jks"
+            echo "QUADTAP_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "QUADTAP_KEY_ALIAS=$KEY_ALIAS"
+            echo "QUADTAP_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+          echo "已还原签名密钥，本次构建正式签名的 APK。"
+
+      - name: Build APK
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.signing.outputs.configured }}" = "true" ]; then
+            gradle --no-daemon assembleRelease --stacktrace
+          else
+            gradle --no-daemon assembleDebug --stacktrace
+          fi
 
       - name: Prepare release assets
         run: |
           set -euo pipefail
-          NAME="QuadTap-${GITHUB_REF_NAME}-debug.apk"
-          cp app/build/outputs/apk/debug/app-debug.apk "$NAME"
+          if [ "${{ steps.signing.outputs.configured }}" = "true" ]; then
+            SRC="app/build/outputs/apk/release/app-release.apk"
+            KIND="release"
+          else
+            SRC="app/build/outputs/apk/debug/app-debug.apk"
+            KIND="debug"
+          fi
+          NAME="QuadTap-${GITHUB_REF_NAME}-${KIND}.apk"
+          cp "$SRC" "$NAME"
           sha256sum "$NAME" > SHA256SUMS.txt
           ls -l "$NAME" SHA256SUMS.txt
           cat SHA256SUMS.txt
+          echo "签名方式 = $KIND"
+
+      - name: Verify APK signature
+        run: |
+          set -euo pipefail
+          APK="$(ls QuadTap-*.apk | head -1)"
+          SDK="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          APKSIGNER="$(find "$SDK/build-tools" -name apksigner -type f 2>/dev/null | sort | tail -1 || true)"
+          if [ -z "$APKSIGNER" ]; then
+            echo "没找到 apksigner，跳过签名校验。"
+            exit 0
+          fi
+          echo "正在校验 $APK"
+          "$APKSIGNER" verify --print-certs "$APK"
 
       - name: Extract release notes from CHANGELOG.md
         run: |
@@ -129,7 +186,7 @@ jobs:
           name: ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
           files: |
-            QuadTap-${{ github.ref_name }}-debug.apk
+            QuadTap-*.apk
             SHA256SUMS.txt
           fail_on_unmatched_files: true
           draft: false

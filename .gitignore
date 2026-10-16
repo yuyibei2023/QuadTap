@@ -7,3 +7,7 @@ local.properties
 *.iml
 .externalNativeBuild/
 .cxx/
+
+# 签名密钥绝对不能提交进仓库，丢了无法再更新应用，泄露了别人就能伪造你的应用
+*.jks
+*.keystore
