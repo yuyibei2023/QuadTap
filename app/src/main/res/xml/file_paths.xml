@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 的可用路径。
+  Android 7（API 24）起禁止跨应用传递 file:// URI，会抛 FileUriExposedException，
+  所以下载好的 APK 必须通过 content:// 交给系统安装器。
+  这里只开放缓存目录下的 updates/，范围最小。
+-->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

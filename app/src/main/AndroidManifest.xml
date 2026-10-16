@@ -6,6 +6,13 @@
     -->
 
     <!--
+      应用内更新需要这个权限，才能把下载好的 APK 交给系统安装器。
+      声明之后用户还要在系统设置里给本应用开启一次「允许安装未知应用」；
+      每次安装仍会弹出系统确认框 —— Android 不允许非系统应用静默安装。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!--
       Android 11（API 30）起有软件包可见性限制。声明这个 queries 之后才能列出
       有启动图标的应用供用户选择白名单，而不必申请受 Play 严格审查的
       QUERY_ALL_PACKAGES 权限。
@@ -47,5 +54,16 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!-- 把缓存里下载好的 APK 以 content:// 形式交给系统安装器 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

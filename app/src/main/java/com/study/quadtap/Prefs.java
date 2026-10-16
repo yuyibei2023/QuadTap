@@ -23,6 +23,8 @@ final class Prefs {
     private static final String K_ALLOWED = "allowed_packages";
     private static final String K_CELL_SIZE = "cell_size_dp";
     private static final String K_HIDE_ON_IME = "hide_on_ime";
+    private static final String K_AUTO_UPDATE = "auto_check_update";
+    private static final String K_IGNORED_VERSION = "ignored_version";
     private static final String[] LABELS = {"A", "B", "C", "D"};
 
     /** 方块边长（dp）的允许范围与默认值。 */
@@ -139,4 +141,16 @@ final class Prefs {
     boolean hideOnIme() { return sp.getBoolean(K_HIDE_ON_IME, true); }
 
     void setHideOnIme(boolean value) { sp.edit().putBoolean(K_HIDE_ON_IME, value).apply(); }
+
+    // ------------------------------------------------------------ 应用内更新
+
+    /** 打开应用时是否自动检查更新。 */
+    boolean autoCheckUpdate() { return sp.getBoolean(K_AUTO_UPDATE, true); }
+
+    void setAutoCheckUpdate(boolean value) { sp.edit().putBoolean(K_AUTO_UPDATE, value).apply(); }
+
+    /** 用户点了「以后再说」的版本号，同一版本不再反复提示。 */
+    String ignoredVersion() { return sp.getString(K_IGNORED_VERSION, null); }
+
+    void setIgnoredVersion(String version) { sp.edit().putString(K_IGNORED_VERSION, version).apply(); }
 }

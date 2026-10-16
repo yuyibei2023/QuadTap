@@ -17,12 +17,14 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
 import java.text.Collator;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -55,6 +57,12 @@ public class MainActivity extends Activity {
     private TextView appScopeLine;
     private TextView sizeLabel;
     private TextView logView;
+    private TextView versionLine;
+    /** 自动检查更新每次启动只做一次，避免每次回到前台都请求网络。 */
+    private boolean autoCheckDone = false;
+    /** 正在检查时不要被 refreshStatus 覆盖掉提示文字。 */
+    private boolean checkingUpdate = false;
+    private AlertDialog downloadDialog;
 
     private int dp(float value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
@@ -74,6 +82,7 @@ public class MainActivity extends Activity {
 
         buildHeader(page);
         buildStatusCard(page);
+        buildUpdateCard(page);
         buildFlowCard(page);
         buildScopeCard(page);
         buildRecognitionCard(page);
@@ -98,6 +107,10 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         refreshStatus();
+        if (!autoCheckDone && prefs.autoCheckUpdate()) {
+            autoCheckDone = true;
+            checkForUpdate(false);
+        }
     }
 
     // ------------------------------------------------------------------ 各区块
@@ -140,6 +153,216 @@ public class MainActivity extends Activity {
         });
 
         page.addView(card, topMargin(16));
+    }
+
+    // ------------------------------------------------------------------ 版本与更新
+
+    private void buildUpdateCard(LinearLayout page) {
+        LinearLayout card = card();
+        card.addView(cardTitle("版本与更新"));
+
+        versionLine = new TextView(this);
+        versionLine.setTextSize(13);
+        versionLine.setTextColor(COLOR_TEXT);
+        versionLine.setLineSpacing(dp(4), 1f);
+        card.addView(versionLine, topMargin(8));
+
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.addView(flexButton("检查更新", new View.OnClickListener() {
+            @Override public void onClick(View v) { checkForUpdate(true); }
+        }), flexParams(0));
+        buttons.addView(flexButton("打开发布页", new View.OnClickListener() {
+            @Override public void onClick(View v) { Updater.openReleasePage(MainActivity.this); }
+        }), flexParams(dp(8)));
+        card.addView(buttons, topMargin(12));
+
+        Switch auto = toggle("启动时自动检查更新", prefs.autoCheckUpdate());
+        auto.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.setAutoCheckUpdate(isChecked);
+            }
+        });
+        card.addView(auto, topMargin(6));
+
+        card.addView(hintText("更新会先下载安装包再交给系统安装器。"
+                + "Android 不允许应用静默安装，所以最后一定会弹一次系统确认框；"
+                + "第一次使用还需要在系统设置里允许本应用安装未知应用。"), topMargin(0));
+
+        page.addView(card, topMargin(12));
+    }
+
+    private String versionSummary() {
+        return "当前版本：" + Updater.currentVersionName(this)
+                + "（versionCode " + Updater.currentVersionCode(this) + "）";
+    }
+
+    private void checkForUpdate(final boolean userInitiated) {
+        checkingUpdate = true;
+        if (versionLine != null) versionLine.setText("正在检查更新…");
+        Updater.check(new Updater.CheckCallback() {
+            @Override public void onChecked(Updater.Release release, String error) {
+                checkingUpdate = false;
+                if (versionLine != null) versionLine.setText(versionSummary());
+
+                if (error != null) {
+                    if (userInitiated) {
+                        new AlertDialog.Builder(MainActivity.this)
+                                .setTitle("检查更新失败")
+                                .setMessage(error + "\n\n如果当前网络访问不了 GitHub，"
+                                        + "可以点「打开发布页」用浏览器手动下载。")
+                                .setPositiveButton("打开发布页", new DialogInterface.OnClickListener() {
+                                    @Override public void onClick(DialogInterface d, int w) {
+                                        Updater.openReleasePage(MainActivity.this);
+                                    }
+                                })
+                                .setNegativeButton("知道了", null)
+                                .show();
+                    }
+                    return;
+                }
+                if (release == null || release.apkUrl == null) {
+                    if (userInitiated) toast("这个版本没有附带 APK，请到发布页确认");
+                    return;
+                }
+                String current = Updater.currentVersionName(MainActivity.this);
+                if (Updater.compareVersions(release.versionName, current) <= 0) {
+                    if (userInitiated) {
+                        new AlertDialog.Builder(MainActivity.this)
+                                .setTitle("已是最新版本")
+                                .setMessage("当前 " + current + "，没有更新的版本。")
+                                .setPositiveButton("好", null)
+                                .show();
+                    }
+                    return;
+                }
+                // 自动检查时，用户点过「以后再说」的版本不再打扰
+                if (!userInitiated && release.versionName.equals(prefs.ignoredVersion())) return;
+                showUpdateDialog(release);
+            }
+        });
+    }
+
+    private void showUpdateDialog(final Updater.Release release) {
+        String notes = release.body == null ? "" : release.body.trim();
+        if (notes.length() > 600) notes = notes.substring(0, 600) + "\n…";
+
+        String message = "当前版本：" + Updater.currentVersionName(this)
+                + "\n新版本：" + release.versionName + "（" + release.prettySize() + "）"
+                + (notes.isEmpty() ? "" : "\n\n" + notes);
+
+        new AlertDialog.Builder(this)
+                .setTitle("发现新版本 " + release.tag)
+                .setMessage(message)
+                .setPositiveButton("立即更新", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) { startDownload(release); }
+                })
+                .setNegativeButton("以后再说", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        prefs.setIgnoredVersion(release.versionName);
+                    }
+                })
+                .setNeutralButton("发布页", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        Updater.openReleasePage(MainActivity.this);
+                    }
+                })
+                .show();
+    }
+
+    private void startDownload(final Updater.Release release) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(24), dp(10), dp(24), dp(10));
+
+        final ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        bar.setMax(100);
+        box.addView(bar, new LinearLayout.LayoutParams(-1, -2));
+
+        final TextView label = new TextView(this);
+        label.setTextSize(12);
+        label.setTextColor(COLOR_HINT);
+        label.setText("准备下载…");
+        box.addView(label, topMargin(8));
+
+        downloadDialog = new AlertDialog.Builder(this)
+                .setTitle("正在下载 " + release.versionName)
+                .setView(box)
+                .setNegativeButton("取消", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) { Updater.cancelDownload(); }
+                })
+                .setCancelable(false)
+                .create();
+        downloadDialog.show();
+
+        Updater.download(this, release, new Updater.ProgressCallback() {
+            @Override public void onProgress(int percent, long downloaded, long total) {
+                bar.setProgress(percent);
+                label.setText(percent + "%　" + String.format(Locale.US, "%.1f / %.1f MB",
+                        downloaded / 1048576.0, total / 1048576.0));
+            }
+
+            @Override public void onFinished(File apk, String error) {
+                dismissDownloadDialog();
+                if (error != null) {
+                    if ("已取消".equals(error)) return;
+                    new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("下载失败")
+                            .setMessage(error + "\n\n可以点「打开发布页」用浏览器手动下载。")
+                            .setPositiveButton("打开发布页", new DialogInterface.OnClickListener() {
+                                @Override public void onClick(DialogInterface d, int w) {
+                                    Updater.openReleasePage(MainActivity.this);
+                                }
+                            })
+                            .setNegativeButton("知道了", null)
+                            .show();
+                    return;
+                }
+                installApk(apk);
+            }
+        });
+    }
+
+    private void installApk(final File apk) {
+        if (!Updater.canInstall(this)) {
+            new AlertDialog.Builder(this)
+                    .setTitle("还需要一次授权")
+                    .setMessage("Android 要求由你手动允许应用安装未知来源的应用。\n\n"
+                            + "接下来会打开设置页，请找到「" + getString(R.string.app_name)
+                            + "」并打开「允许安装未知应用」，然后回到本页再点一次「检查更新」。")
+                    .setPositiveButton("去设置", new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int w) {
+                            Updater.openInstallPermissionSettings(MainActivity.this);
+                        }
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+            return;
+        }
+        String error = Updater.install(this, apk);
+        if (error != null) {
+            new AlertDialog.Builder(this)
+                    .setTitle("无法启动安装")
+                    .setMessage(error + "\n\n可以点「打开发布页」用浏览器手动下载。")
+                    .setPositiveButton("打开发布页", new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int w) {
+                            Updater.openReleasePage(MainActivity.this);
+                        }
+                    })
+                    .setNegativeButton("知道了", null)
+                    .show();
+        }
+    }
+
+    private void dismissDownloadDialog() {
+        if (downloadDialog != null) {
+            try { downloadDialog.dismiss(); } catch (Exception ignored) { }
+            downloadDialog = null;
+        }
+    }
+
+    private void toast(String text) {
+        Toast.makeText(this, text, Toast.LENGTH_SHORT).show();
     }
 
     private void buildFlowCard(LinearLayout page) {
@@ -435,6 +658,7 @@ public class MainActivity extends Activity {
             }
         }
         if (sizeLabel != null) updateSizeLabel(prefs.cellSizeDp());
+        if (versionLine != null && !checkingUpdate) versionLine.setText(versionSummary());
     }
 
     private void updateSizeLabel(int value) {
