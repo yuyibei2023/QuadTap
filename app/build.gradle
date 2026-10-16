@@ -57,4 +57,10 @@ dependencies {
     // 只用它的 FileProvider：Android 7 起禁止跨应用传 file:// URI，
     // 应用内更新必须把下载好的 APK 以 content:// 交给系统安装器。
     implementation 'androidx.core:core:1.13.1'
+
+    // androidx.core 会引入较新的 kotlin-stdlib，而 ML Kit 那条依赖链上还挂着旧的
+    // kotlin-stdlib-jdk8。Kotlin 1.8 起 jdk7/jdk8 的内容已并入 kotlin-stdlib，
+    // 两者同时存在会报 "Duplicate class kotlin.streams.jdk8.StreamsKt" 导致构建失败。
+    // 用 BOM 把所有 kotlin 构件对齐到同一版本即可（这是官方推荐的修法）。
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
 }
