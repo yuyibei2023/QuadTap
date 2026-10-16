@@ -19,9 +19,13 @@ import android.widget.Toast;
 
 public class MainActivity extends Activity {
 
+    /** 界面上最多显示多少行日志。完整日志仍然可以复制/分享。 */
+    private static final int LOG_TAIL_LINES = 150;
+
     private Prefs prefs;
     private TextView statusLine;
     private TextView detailLine;
+    private TextView logView;
 
     private int dp(float value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
@@ -156,6 +160,62 @@ public class MainActivity extends Activity {
         foot.setLineSpacing(dp(3), 1f);
         page.addView(foot, margins(-1, -2, 24, 0));
 
+        // ---- 诊断日志 ----
+        page.addView(sectionTitle("诊断日志"), margins(-1, -2, 26, 0));
+
+        TextView logHint = new TextView(this);
+        logHint.setText("自动识别不准时，每次点击悬浮格都会记录当次扫描的完整节点树和判定过程。"
+                + "下面显示最近 " + LOG_TAIL_LINES + " 行，复制或分享发给我就能定位问题。"
+                + "日志只存在本机内存里，退出应用即清空。");
+        logHint.setTextSize(13);
+        logHint.setTextColor(0xFF657086);
+        logHint.setLineSpacing(dp(3), 1f);
+        page.addView(logHint, margins(-1, -2, 8, 0));
+
+        logView = new TextView(this);
+        logView.setTextSize(9);
+        logView.setTextColor(0xFFD5DCE8);
+        logView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        logView.setTextIsSelectable(true);
+        logView.setPadding(dp(10), dp(10), dp(10), dp(10));
+        GradientDrawable logBackground = new GradientDrawable();
+        logBackground.setColor(0xFF1B2130);
+        logBackground.setCornerRadius(dp(10));
+        logView.setBackground(logBackground);
+        page.addView(logView, margins(-1, -2, 8, 0));
+
+        LinearLayout logButtons = new LinearLayout(this);
+        logButtons.setOrientation(LinearLayout.HORIZONTAL);
+        logButtons.addView(logButton("刷新", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                refreshStatus();
+                Toast.makeText(MainActivity.this, "已刷新", Toast.LENGTH_SHORT).show();
+            }
+        }), logButtonParams(0));
+        logButtons.addView(logButton("复制", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                String text = TapLog.dump();
+                if (text.isEmpty()) { Toast.makeText(MainActivity.this, "日志为空", Toast.LENGTH_SHORT).show(); return; }
+                TapLog.copyToClipboard(MainActivity.this, text, "QuadTap 日志");
+                Toast.makeText(MainActivity.this, "已复制 " + TapLog.size() + " 行到剪贴板", Toast.LENGTH_SHORT).show();
+            }
+        }), logButtonParams(dp(8)));
+        logButtons.addView(logButton("分享", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                String text = TapLog.dump();
+                if (text.isEmpty()) { Toast.makeText(MainActivity.this, "日志为空", Toast.LENGTH_SHORT).show(); return; }
+                TapLog.share(MainActivity.this, text);
+            }
+        }), logButtonParams(dp(8)));
+        logButtons.addView(logButton("清空", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                TapLog.clear();
+                refreshLog();
+                Toast.makeText(MainActivity.this, "已清空", Toast.LENGTH_SHORT).show();
+            }
+        }), logButtonParams(dp(8)));
+        page.addView(logButtons, margins(-1, -2, 10, 0));
+
         ScrollView scroll = new ScrollView(this);
         scroll.addView(page);
         setContentView(scroll);
@@ -167,6 +227,7 @@ public class MainActivity extends Activity {
     }
 
     private void refreshStatus() {
+        refreshLog();
         if (statusLine == null) return;
 
         boolean enabled = isAccessibilityEnabled();
@@ -255,6 +316,28 @@ public class MainActivity extends Activity {
         button.setTextSize(15);
         button.setTextColor(0xFF30394A);
         button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFFE3E8F0));
+        return button;
+    }
+
+    private void refreshLog() {
+        if (logView == null) return;
+        String text = TapLog.tail(LOG_TAIL_LINES);
+        if (text.isEmpty()) {
+            text = "(暂无日志。开启无障碍服务后点击悬浮格，这里就会出现当次扫描记录。)";
+        }
+        logView.setText(text);
+    }
+
+    private LinearLayout.LayoutParams logButtonParams(int startMarginDp) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(44), 1f);
+        params.leftMargin = startMarginDp;
+        return params;
+    }
+
+    private Button logButton(String text, View.OnClickListener listener) {
+        Button button = secondaryButton(text);
+        button.setTextSize(14);
+        button.setOnClickListener(listener);
         return button;
     }
 }

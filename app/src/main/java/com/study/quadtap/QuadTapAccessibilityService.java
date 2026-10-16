@@ -116,7 +116,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     int lastFoundCount() { return lastFoundCount; }
 
     private final Runnable scanRunnable = new Runnable() {
-        @Override public void run() { scanAccessibilityTree(); }
+        @Override public void run() { scanAccessibilityTree(false); }
     };
     private final Runnable hideMarksRunnable = new Runnable() {
         @Override public void run() { if (markLayer != null) markLayer.removeAllViews(); }
@@ -144,7 +144,15 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         }
         createMarkLayer();
         createOverlay();
-        scanAccessibilityTree();
+        Point size = screenSize();
+        TapLog.add("===== 服务已连接 =====");
+        TapLog.add("Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")");
+        TapLog.add("屏幕 " + size.x + "x" + size.y + "  密度 " + getResources().getDisplayMetrics().density);
+        TapLog.add("截屏能力 API30+ = " + (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                + "  OCR 客户端 = " + (recognizer != null));
+        TapLog.add("开关: OCR=" + prefs.useOcr() + " 标记=" + prefs.showMarks()
+                + " 仅手动=" + prefs.manualOnly() + " 已校准=" + prefs.learnedCount() + "/4");
+        scanAccessibilityTree(false);
         toast("面板已就绪：点击定位，长按手动校准");
     }
 
@@ -160,7 +168,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 }
             }
         });
-        scanAccessibilityTree();
+        scanAccessibilityTree(false);
     }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
@@ -454,6 +462,10 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         Point size = screenSize();
         if (size.x <= 0 || size.y <= 0) return;
         prefs.setLearned(label, clamp01(rawX / size.x), clamp01(rawY / size.y));
+        TapLog.add("校准记录 " + label + " 原始=(" + (int) rawX + "," + (int) rawY + ") 屏幕="
+                + size.x + "x" + size.y + " 相对=("
+                + String.format(Locale.US, "%.4f", rawX / size.x) + ","
+                + String.format(Locale.US, "%.4f", rawY / size.y) + ")");
     }
 
     private static float clamp01(float value) {
@@ -474,28 +486,40 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     // ---------------------------------------------------------------- 点击流程
 
     private void performMappedTap(String label) {
-        if (busy) { toast("正在识别中，请稍候"); return; }
+        TapLog.add("");
+        TapLog.add("===== 点击 " + label + " =====");
+        if (busy) {
+            TapLog.add("忽略: 上一次识别还在进行中");
+            toast("正在识别中，请稍候");
+            return;
+        }
 
         if (!prefs.manualOnly()) {
-            scanAccessibilityTree();
+            scanAccessibilityTree(true);
             Rect rect = targetBounds.get(label);
             if (rect != null) {
+                TapLog.add("来源=节点定位  中心=(" + rect.centerX() + "," + rect.centerY() + ")");
                 if (prefs.showMarks()) showMarks();
                 tap(rect.centerX(), rect.centerY());
                 String text = targetText.get(label);
                 toast("已定位 " + label + (text == null ? "" : "（" + shorten(text) + "）"));
                 return;
             }
+            TapLog.add("节点定位失败: 该标签没有可用候选");
+        } else {
+            TapLog.add("已开启「仅用校准位置」, 跳过节点扫描");
         }
 
         Rect learned = learnedRect(label);
         if (learned != null) {
+            TapLog.add("来源=已校准位置  中心=(" + learned.centerX() + "," + learned.centerY() + ")");
             tap(learned.centerX(), learned.centerY());
             toast("使用已校准位置点击 " + label);
             return;
         }
 
         if (prefs.manualOnly()) {
+            TapLog.add("无校准记录, 且已开启仅手动模式 -> 放弃");
             toast("尚未校准 " + label + "，请长按该格取点");
             return;
         }
@@ -503,8 +527,10 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && prefs.useOcr() && recognizer != null) {
             runOcrFallback(label);
         } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            TapLog.add("无 OCR 可用: 系统低于 Android 11 -> 放弃");
             toast("未找到 " + label + "；本机系统版本不支持截屏识别，请长按该格取点");
         } else {
+            TapLog.add("无 OCR 可用: OCR 开关=" + prefs.useOcr() + " 客户端=" + (recognizer != null) + " -> 放弃");
             toast("未找到 " + label + "，请长按该格取点");
         }
     }
@@ -517,13 +543,16 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
     // ---------------------------------------------------------------- 无障碍节点扫描
 
-    private void scanAccessibilityTree() {
+    private void scanAccessibilityTree(boolean verbose) {
         targetBounds.clear();
         targetText.clear();
         Map<String, List<Candidate>> found = new HashMap<>();
         for (String label : LABELS) found.put(label, new ArrayList<Candidate>());
         found.put(KEY_TRUE, new ArrayList<Candidate>());
         found.put(KEY_FALSE, new ArrayList<Candidate>());
+
+        List<String> dump = verbose ? new ArrayList<String>() : null;
+        int[] counters = new int[]{0, 0};   // {访问节点数, 带文本节点数}
 
         List<AccessibilityNodeInfo> roots = new ArrayList<>();
         try {
@@ -532,46 +561,77 @@ public class QuadTapAccessibilityService extends AccessibilityService {
             // 配置里声明了 flagRetrieveInteractiveWindows，这里真正用上：
             // 题目渲染在独立窗口 / 弹窗里时，仅看当前活动窗口是找不到的。
             List<AccessibilityWindowInfo> windows = getWindows();
+            if (verbose) TapLog.add("窗口共 " + (windows == null ? 0 : windows.size()) + " 个:");
             for (AccessibilityWindowInfo window : windows) {
                 if (window == null) continue;
                 AccessibilityNodeInfo root = window.getRoot();
                 if (root == null) continue;
                 // 必须排除自己的悬浮窗，否则面板上那四个 "A".."D" 会被当成选项。
-                if (isOwnNode(root)) continue;
+                boolean own = isOwnNode(root);
+                if (verbose) {
+                    TapLog.add("  win type=" + window.getType()
+                            + " layer=" + window.getLayer()
+                            + " active=" + window.isActive()
+                            + " pkg=" + root.getPackageName()
+                            + (own ? "   <-- 自己的窗口,已跳过" : ""));
+                }
+                if (own) continue;
                 boolean duplicate = false;
                 for (AccessibilityNodeInfo existing : roots) {
                     if (root.equals(existing)) { duplicate = true; break; }
                 }
                 if (!duplicate) roots.add(root);
             }
-        } catch (Exception ignored) { }
+        } catch (Exception e) {
+            if (verbose) TapLog.add("取窗口失败: " + e);
+        }
 
-        for (AccessibilityNodeInfo root : roots) collect(root, 0, false, found);
-        pickBest(found);
+        for (AccessibilityNodeInfo root : roots) collect(root, 0, false, found, dump, counters);
+        if (verbose) {
+            TapLog.add("节点树: 访问 " + counters[0] + " 个节点, 其中 " + counters[1] + " 个带文本");
+            if (dump != null) {
+                for (String line : dump) TapLog.add(line);
+            }
+        }
+        pickBest(found, verbose);
     }
 
     private void collect(AccessibilityNodeInfo node, int depth, boolean clickableAncestor,
-                         Map<String, List<Candidate>> out) {
+                         Map<String, List<Candidate>> out, List<String> dump, int[] counters) {
         if (node == null || depth > 40) return;
         try {
             // 自己的悬浮窗不属于"屏幕上的选项"，直接跳过整棵子树。
             if (isOwnNode(node)) return;
 
+            counters[0]++;
             boolean clickable = clickableAncestor || node.isClickable();
 
             CharSequence text = node.getText();
             if (text == null || text.length() == 0) text = node.getContentDescription();
-            if (text != null && text.length() > 0 && text.length() <= MAX_LABEL_TEXT) {
-                String normalized = normalize(text.toString());
-                String key = labelOf(normalized);
-                if (key == null) key = judgeKeyOf(normalized);
-                if (key != null) {
-                    Rect bounds = new Rect();
-                    node.getBoundsInScreen(bounds);
-                    if (!bounds.isEmpty()) {
+            if (text != null && text.length() > 0) {
+                counters[1]++;
+                Rect bounds = new Rect();
+                node.getBoundsInScreen(bounds);
+                String raw = text.toString();
+
+                if (dump != null) {
+                    // 原样记录，用来确认真实题库的选项文字到底长什么样。
+                    String shown = raw.length() > 60 ? raw.substring(0, 60) + "…" : raw;
+                    dump.add("  d" + depth
+                            + (clickable ? " click" : "     ")
+                            + " [" + bounds.left + "," + bounds.top + "][" + bounds.right + "," + bounds.bottom + "]"
+                            + " txt=\"" + shown + "\""
+                            + (raw.length() > MAX_LABEL_TEXT ? "  <-- 超长,已忽略" : ""));
+                }
+
+                if (raw.length() <= MAX_LABEL_TEXT) {
+                    String normalized = normalize(raw);
+                    String key = labelOf(normalized);
+                    if (key == null) key = judgeKeyOf(normalized);
+                    if (key != null && !bounds.isEmpty()) {
                         Rect row = expandToRow(node, bounds);
                         if (row != null && !row.isEmpty()) {
-                            out.get(key).add(new Candidate(row, text.toString(), clickable, depth));
+                            out.get(key).add(new Candidate(row, raw, clickable, depth));
                         }
                     }
                 }
@@ -579,7 +639,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
             int childCount = node.getChildCount();
             for (int i = 0; i < childCount; i++) {
-                collect(node.getChild(i), depth + 1, clickable, out);
+                collect(node.getChild(i), depth + 1, clickable, out, dump, counters);
             }
         } catch (Exception ignored) {
             // 节点可能在遍历过程中失效，跳过即可。
@@ -650,14 +710,31 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         return fallback;
     }
 
-    private void pickBest(Map<String, List<Candidate>> found) {
+    private void pickBest(Map<String, List<Candidate>> found, boolean verbose) {
         Point size = screenSize();
+        if (verbose) TapLog.add("--- 标签候选与评分 ---");
 
         for (String label : LABELS) {
-            Candidate best = bestCandidate(found.get(label), size);
+            List<Candidate> list = found.get(label);
+            if (verbose) {
+                TapLog.add(label + ": " + (list == null ? 0 : list.size()) + " 个候选");
+                if (list != null) {
+                    for (Candidate candidate : list) {
+                        TapLog.add("    " + rectToString(candidate.rect)
+                                + (candidate.clickable ? " click" : "      ")
+                                + " d=" + candidate.depth
+                                + " score=" + scoreOf(candidate, size)
+                                + " txt=\"" + shorten(candidate.text) + "\"");
+                    }
+                }
+            }
+            Candidate best = bestCandidate(list, size);
             if (best != null) {
                 targetBounds.put(label, best.rect);
                 targetText.put(label, best.text);
+                if (verbose) TapLog.add("  -> 选中 " + label + " " + rectToString(best.rect));
+            } else if (verbose && list != null && !list.isEmpty()) {
+                TapLog.add("  -> 候选全部被尺寸过滤");
             }
         }
 
@@ -670,27 +747,46 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 targetText.put("A", yes.text);
                 targetBounds.put("B", no.rect);
                 targetText.put("B", no.text);
+                if (verbose) TapLog.add("判断题兜底生效: 正确->A 错误->B");
             }
         }
 
-        // 四个标签都找到时，检查纵坐标顺序是否 A->D 递增；明显矛盾就降级为"未找到"，
-        // 免得点错选项。
+        // 四个标签都找到时检查纵坐标顺序。
+        // 这里只记录异常，绝不丢弃结果 —— 早先的版本一旦不满足就清空全部四个，
+        // 结果 4 选项题目整体失效（2 选项时 size != 4 不触发，所以看起来还能用）。
         if (targetBounds.size() == LABELS.length) {
             int previous = Integer.MIN_VALUE;
             boolean ordered = true;
+            StringBuilder order = new StringBuilder();
             for (String label : LABELS) {
                 Rect rect = targetBounds.get(label);
                 if (rect == null) { ordered = false; break; }
-                if (rect.top < previous) { ordered = false; break; }
+                if (rect.top < previous) ordered = false;
                 previous = rect.top;
+                order.append(label).append(".top=").append(rect.top).append(' ');
             }
-            if (!ordered) {
-                targetBounds.clear();
-                targetText.clear();
+            if (verbose) {
+                TapLog.add("顺序检查: "
+                        + (ordered ? "通过" : "不满足 A->D 递增(仅记录, 不再丢弃)")
+                        + "   " + order);
             }
         }
 
         lastFoundCount = targetBounds.size();
+        if (verbose) TapLog.add("扫描结果: 定位到 " + lastFoundCount + " 个标签");
+    }
+
+    private int scoreOf(Candidate candidate, Point size) {
+        Rect rect = candidate.rect;
+        int score = 0;
+        if (candidate.clickable) score += 1000;
+        // 偏好紧凑的选项行，压制整屏容器。
+        score += Math.max(0, 400 - rect.height());
+        // 选项通常在题目下方。
+        if (rect.top > size.y * 0.15f) score += 200;
+        // 浅层节点更可能是选项本身。
+        score -= candidate.depth;
+        return score;
     }
 
     /** 在同一个标签的多个候选里挑最像"选项行"的那个。 */
@@ -707,15 +803,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
             if (rect.width() > maxWidth || rect.height() > maxHeight) continue;
             if (rect.width() < dp(4) || rect.height() < dp(4)) continue;
 
-            int score = 0;
-            if (candidate.clickable) score += 1000;
-            // 偏好紧凑的选项行，压制整屏容器。
-            score += Math.max(0, 400 - rect.height());
-            // 选项通常在题目下方。
-            if (rect.top > size.y * 0.15f) score += 200;
-            // 浅层节点更可能是选项本身。
-            score -= candidate.depth;
-
+            int score = scoreOf(candidate, size);
             if (score > bestScore) {
                 bestScore = score;
                 best = candidate;
@@ -724,14 +812,25 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         return best;
     }
 
+    private static String rectToString(Rect rect) {
+        if (rect == null) return "null";
+        return "[" + rect.left + "," + rect.top + "][" + rect.right + "," + rect.bottom + "]"
+                + " " + rect.width() + "x" + rect.height();
+    }
+
     // ---------------------------------------------------------------- OCR 回退
 
     @TargetApi(Build.VERSION_CODES.R)
     private void runOcrFallback(final String label) {
         long now = System.currentTimeMillis();
-        if (now - lastShotAt < 400) { toast("截屏太频繁，请稍候"); return; }
+        if (now - lastShotAt < 400) {
+            TapLog.add("OCR 放弃: 距上次截屏不足 400ms");
+            toast("截屏太频繁，请稍候");
+            return;
+        }
         lastShotAt = now;
 
+        TapLog.add("进入 OCR 回退 (目标 " + label + ")");
         busy = true;
         setOverlaysVisible(false);
         handler.postDelayed(new Runnable() {
@@ -741,10 +840,13 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                         @Override public void onSuccess(ScreenshotResult result) {
                             Bitmap software = toSoftwareBitmap(result);
                             if (software == null) {
+                                TapLog.add("OCR 失败: 截图无法转成 ARGB_8888 软件位图");
                                 finishOcr();
                                 toast("截图转换失败");
                                 return;
                             }
+                            TapLog.add("截屏成功 " + software.getWidth() + "x" + software.getHeight()
+                                    + " config=" + software.getConfig());
                             final Bitmap image = software;
                             InputImage input = InputImage.fromBitmap(image, 0);
                             recognizer.process(input)
@@ -758,6 +860,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                                     })
                                     .addOnFailureListener(new com.google.android.gms.tasks.OnFailureListener() {
                                         @Override public void onFailure(Exception e) {
+                                            TapLog.add("OCR 失败: " + e);
                                             image.recycle();
                                             finishOcr();
                                             toast("OCR 识别失败");
@@ -766,11 +869,14 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                         }
 
                         @Override public void onFailure(int errorCode) {
+                            TapLog.add("截屏失败: " + describeScreenshotError(errorCode)
+                                    + " (code=" + errorCode + ")");
                             finishOcr();
                             toast("无法读取屏幕：" + describeScreenshotError(errorCode));
                         }
                     });
                 } catch (Throwable t) {
+                    TapLog.add("截屏抛异常: " + t);
                     finishOcr();
                     toast("屏幕识别失败");
                 }
@@ -823,14 +929,17 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
     private void applyOcrResult(String requested, Map<String, Rect> ocr) {
         if (ocr.isEmpty()) {
+            TapLog.add("OCR 结论: 没有一个标签被识别出来 -> 放弃");
             toast("未找到 " + requested + "，请长按该格取点");
             return;
         }
         Rect rect = ocr.get(requested);
         if (rect != null) {
+            TapLog.add("来源=OCR  中心=(" + rect.centerX() + "," + rect.centerY() + ")");
             tap(rect.centerX(), rect.centerY());
             toast("OCR 定位到 " + requested + "（共识别 " + ocr.size() + " 项）");
         } else {
+            TapLog.add("OCR 结论: 没找到 " + requested + ", 只有 " + ocr.keySet());
             toast("OCR 只识别到 " + ocr.keySet() + "，未找到 " + requested + "，可长按该格取点");
         }
     }
@@ -842,6 +951,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
         List<Rect> yes = new ArrayList<>();
         List<Rect> no = new ArrayList<>();
+        int lineCount = 0;
 
         for (Text.TextBlock block : text.getTextBlocks()) {
             if (block == null) continue;
@@ -851,19 +961,30 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 if (box == null || box.isEmpty()) continue;
                 String normalized = normalize(line.getText());
                 if (normalized.isEmpty()) continue;
+                lineCount++;
 
                 String label = labelOf(normalized);
+                String shown = normalized.length() > 40 ? normalized.substring(0, 40) + "…" : normalized;
+
                 if (label != null) {
                     raw.get(label).add(box);
+                    TapLog.add("  OCR行[" + lineCount + "] " + rectToString(box)
+                            + " -> " + label + "  \"" + shown + "\"");
                     continue;
                 }
                 if (normalized.equals("正确") || normalized.equals("对") || normalized.equals("是")) {
                     yes.add(box);
+                    TapLog.add("  OCR行[" + lineCount + "] " + rectToString(box) + " -> 正确");
                 } else if (normalized.equals("错误") || normalized.equals("错") || normalized.equals("否")) {
                     no.add(box);
+                    TapLog.add("  OCR行[" + lineCount + "] " + rectToString(box) + " -> 错误");
+                } else {
+                    TapLog.add("  OCR行[" + lineCount + "] " + rectToString(box)
+                            + " -> 无标签  \"" + shown + "\"");
                 }
             }
         }
+        TapLog.add("OCR 共 " + lineCount + " 行有效文本");
 
         // 判断题没有 A-D 字母，用"正确/错误"补上 A/B。
         if (raw.get("A").isEmpty() && raw.get("B").isEmpty()) {
@@ -938,6 +1059,10 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         }
 
         if (best != null) result.putAll(best);
+        TapLog.add("OCR 组合评分: 有候选的标签=" + present + " 最终选中 " + result.size() + " 个");
+        for (Map.Entry<String, Rect> entry : result.entrySet()) {
+            TapLog.add("  " + entry.getKey() + " " + rectToString(entry.getValue()));
+        }
         return result;
     }
 
