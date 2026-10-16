@@ -95,3 +95,15 @@ jobs:
           fail_on_unmatched_files: true
           draft: false
           prerelease: false
+
+      - name: Sync release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # action-gh-release 在 release 已存在时不会刷新说明文字（只更新产物），
+          # 重复打同一个标签就会留下旧说明。这里用运行器自带的 gh 强制同步一次。
+          gh release edit "$GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
+          echo "--- 最终发布说明 ---"
+          gh release view "$GITHUB_REF_NAME" --json tagName,name,url,assets \
+            --template '{{.name}}  {{.url}}{{"\n"}}{{range .assets}}  asset: {{.name}} ({{.size}} bytes){{"\n"}}{{end}}'
