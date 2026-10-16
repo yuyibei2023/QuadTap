@@ -76,7 +76,7 @@ jobs:
           VER="${GITHUB_REF_NAME#v}"
           awk -v ver="$VER" '
             index($0, "## [" ver "]") == 1 { capture = 1; next }
-            capture && index($0, "## [") == 1 { exit }
+            capture && (index($0, "## [") == 1 || $0 == "---") { exit }
             capture { print }
           ' CHANGELOG.md > RELEASE_NOTES.md
           if [ ! -s RELEASE_NOTES.md ]; then
