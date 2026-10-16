@@ -25,6 +25,12 @@ final class Prefs {
     private static final String K_HIDE_ON_IME = "hide_on_ime";
     private static final String K_AUTO_UPDATE = "auto_check_update";
     private static final String K_IGNORED_VERSION = "ignored_version";
+    private static final String K_THEME_MODE = "theme_mode";
+
+    /** 主题：跟随系统 / 强制白天 / 强制黑夜。 */
+    static final int THEME_SYSTEM = 0;
+    static final int THEME_LIGHT = 1;
+    static final int THEME_DARK = 2;
     private static final String[] LABELS = {"A", "B", "C", "D"};
 
     /** 方块边长（dp）的允许范围与默认值。 */
@@ -161,4 +167,14 @@ final class Prefs {
     String ignoredVersion() { return sp.getString(K_IGNORED_VERSION, null); }
 
     void setIgnoredVersion(String version) { sp.edit().putString(K_IGNORED_VERSION, version).apply(); }
+
+    // ------------------------------------------------------------ 外观
+
+    int themeMode() {
+        int value = sp.getInt(K_THEME_MODE, THEME_SYSTEM);
+        if (value < THEME_SYSTEM || value > THEME_DARK) return THEME_SYSTEM;
+        return value;
+    }
+
+    void setThemeMode(int mode) { sp.edit().putInt(K_THEME_MODE, mode).apply(); }
 }

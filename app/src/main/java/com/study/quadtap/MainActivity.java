@@ -6,6 +6,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -19,11 +20,20 @@ import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.core.graphics.Insets;
+import androidx.core.view.OnApplyWindowInsetsListener;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 import java.io.File;
 import java.text.Collator;
@@ -41,16 +51,73 @@ public class MainActivity extends Activity {
     /** 日志区最多显示多少行。完整日志仍然可以复制/分享。 */
     private static final int LOG_TAIL_LINES = 120;
 
-    private static final int COLOR_BG = 0xFFF2F4F8;
-    private static final int COLOR_CARD = 0xFFFFFFFF;
-    private static final int COLOR_STROKE = 0xFFE4E9F2;
-    private static final int COLOR_TITLE = 0xFF16203A;
-    private static final int COLOR_TEXT = 0xFF33405A;
-    private static final int COLOR_HINT = 0xFF7C879C;
-    private static final int COLOR_ACCENT = 0xFF3478F6;
-    private static final int COLOR_OK = 0xFF1F8A4C;
-    private static final int COLOR_WARN = 0xFFB07A16;
-    private static final int COLOR_BAD = 0xFFC0392B;
+    /**
+     * 调色板。做成实例字段而不是 static final，是为了能在深色/浅色之间切换 ——
+     * onCreate 里先按主题赋值，之后各处的用法完全不变。
+     */
+    private int COLOR_BG;
+    private int COLOR_CARD;
+    private int COLOR_STROKE;
+    private int COLOR_TITLE;
+    private int COLOR_TEXT;
+    private int COLOR_HINT;
+    private int COLOR_ACCENT;
+    private int COLOR_OK;
+    private int COLOR_WARN;
+    private int COLOR_BAD;
+    private int COLOR_BTN_SECONDARY;
+    private int COLOR_LOG_BG;
+    private int COLOR_LOG_TEXT;
+
+    private boolean darkTheme = false;
+
+    private void applyPalette(boolean dark) {
+        darkTheme = dark;
+        if (dark) {
+            COLOR_BG = 0xFF0F131A;
+            COLOR_CARD = 0xFF1A212B;
+            COLOR_STROKE = 0xFF2B3542;
+            COLOR_TITLE = 0xFFE9EEF7;
+            COLOR_TEXT = 0xFFC4CDDB;
+            COLOR_HINT = 0xFF8994A7;
+            COLOR_ACCENT = 0xFF5B93F7;
+            COLOR_OK = 0xFF4CAF7D;
+            COLOR_WARN = 0xFFD9A544;
+            COLOR_BAD = 0xFFE0705F;
+            COLOR_BTN_SECONDARY = 0xFF2B3542;
+            COLOR_LOG_BG = 0xFF0A0E14;
+            COLOR_LOG_TEXT = 0xFFBAC4D4;
+        } else {
+            COLOR_BG = 0xFFF2F4F8;
+            COLOR_CARD = 0xFFFFFFFF;
+            COLOR_STROKE = 0xFFE4E9F2;
+            COLOR_TITLE = 0xFF16203A;
+            COLOR_TEXT = 0xFF33405A;
+            COLOR_HINT = 0xFF7C879C;
+            COLOR_ACCENT = 0xFF3478F6;
+            COLOR_OK = 0xFF1F8A4C;
+            COLOR_WARN = 0xFFB07A16;
+            COLOR_BAD = 0xFFC0392B;
+            COLOR_BTN_SECONDARY = 0xFFE7ECF5;
+            COLOR_LOG_BG = 0xFF1B2130;
+            COLOR_LOG_TEXT = 0xFFD5DCE8;
+        }
+    }
+
+    /** 系统当前是否处于深色模式。 */
+    private boolean systemInDarkMode() {
+        int mode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        return mode == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    /** 按「设置里的选择 + 系统状态」算出实际该用深色还是浅色。 */
+    private boolean resolveDark() {
+        switch (prefs.themeMode()) {
+            case Prefs.THEME_LIGHT: return false;
+            case Prefs.THEME_DARK: return true;
+            default: return systemInDarkMode();
+        }
+    }
 
     private Prefs prefs;
     private TextView statusLine;
@@ -80,9 +147,18 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = new Prefs(this);
-        getWindow().setStatusBarColor(COLOR_BG);
-        getWindow().setNavigationBarColor(COLOR_BG);
-        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        applyPalette(resolveDark());
+
+        // targetSdk 35 起系统强制「边到边」：应用会被绘制到状态栏和导航栏下面，
+        // setStatusBarColor 之类已经失效。所以必须自己把系统栏高度让出来，
+        // 否则顶部标题会被状态栏压住（这正是之前的问题）。
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        WindowInsetsControllerCompat controller =
+                WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        controller.setAppearanceLightStatusBars(!darkTheme);
+        controller.setAppearanceLightNavigationBars(!darkTheme);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -121,14 +197,31 @@ public class MainActivity extends Activity {
         buildLogCard(tabLog);
         addPage("日志", tabLog);
 
-        // 关于
+        // 设置（外观 / 技术 / 更新日志）
         LinearLayout tabAbout = newPage();
+        buildAppearanceCard(tabAbout);
         buildAboutCard(tabAbout);
         buildFooter(tabAbout);
-        addPage("关于", tabAbout);
+        addPage("设置", tabAbout);
 
         setContentView(root);
+        applyWindowInsets(root);
         selectTab(0);
+    }
+
+    /**
+     * 把状态栏和导航栏的高度变成根布局的内边距。
+     * 边到边模式下不这么做，顶部内容就会钻到状态栏底下。
+     */
+    private void applyWindowInsets(final View root) {
+        ViewCompat.setOnApplyWindowInsetsListener(root, new OnApplyWindowInsetsListener() {
+            @Override public WindowInsetsCompat onApplyWindowInsets(View view, WindowInsetsCompat insets) {
+                Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+                view.setPadding(0, bars.top, 0, bars.bottom);
+                return insets;
+            }
+        });
+        ViewCompat.requestApplyInsets(root);
     }
 
     private LinearLayout newPage() {
@@ -655,12 +748,12 @@ public class MainActivity extends Activity {
 
         logView = new TextView(this);
         logView.setTextSize(9);
-        logView.setTextColor(0xFFD5DCE8);
+        logView.setTextColor(COLOR_LOG_TEXT);
         logView.setTypeface(Typeface.MONOSPACE);
         logView.setTextIsSelectable(true);
         logView.setPadding(dp(10), dp(10), dp(10), dp(10));
         GradientDrawable logBackground = new GradientDrawable();
-        logBackground.setColor(0xFF1B2130);
+        logBackground.setColor(COLOR_LOG_BG);
         logBackground.setCornerRadius(dp(10));
         logView.setBackground(logBackground);
         section.content.addView(logView, topMargin(10));
@@ -700,6 +793,47 @@ public class MainActivity extends Activity {
         page.addView(section.root, topMargin(12));
     }
 
+    private void buildAppearanceCard(LinearLayout page) {
+        LinearLayout card = card();
+        card.addView(cardTitle("外观"));
+        card.addView(hintText("选「跟随系统」时会随系统的深色模式自动切换。修改后界面会立即重建。"),
+                topMargin(6));
+
+        final int[] modes = {Prefs.THEME_SYSTEM, Prefs.THEME_LIGHT, Prefs.THEME_DARK};
+        final String[] labels = {"跟随系统", "白天", "黑夜"};
+
+        RadioGroup group = new RadioGroup(this);
+        group.setOrientation(RadioGroup.VERTICAL);
+        group.setPadding(0, dp(4), 0, 0);
+
+        int checkedId = View.NO_ID;
+        for (int i = 0; i < modes.length; i++) {
+            RadioButton button = new RadioButton(this);
+            button.setId(1000 + i);
+            button.setText(labels[i]);
+            button.setTextSize(14);
+            button.setTextColor(COLOR_TEXT);
+            button.setPadding(0, dp(8), 0, dp(8));
+            group.addView(button);
+            if (prefs.themeMode() == modes[i]) checkedId = 1000 + i;
+        }
+        // 先 check 再挂监听，避免初始化时就触发一次重建
+        if (checkedId != View.NO_ID) group.check(checkedId);
+
+        group.setOnCheckedChangeListener(new RadioGroup.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(RadioGroup g, int id) {
+                int index = id - 1000;
+                if (index < 0 || index >= modes.length) return;
+                if (prefs.themeMode() == modes[index]) return;
+                prefs.setThemeMode(modes[index]);
+                recreate();
+            }
+        });
+        card.addView(group);
+
+        page.addView(card, topMargin(12));
+    }
+
     private void buildAboutCard(LinearLayout page) {
         LinearLayout tech = card();
         tech.addView(cardTitle("使用的技术"));
@@ -717,7 +851,10 @@ public class MainActivity extends Activity {
 
         CollapsibleCard log = new CollapsibleCard("完整更新日志", false);
         log.content.addView(hintText(
-                "V1.8\n"
+                "V1.9\n"
+                + "· 修复顶部标题被状态栏挡住（Android 15 起强制边到边，需自己让出系统栏高度）\n"
+                + "· 新增主题切换：跟随系统 / 白天 / 黑夜\n\n"
+                + "V1.8\n"
                 + "· 修复判断题完全失效：选项行是满屏宽，被 90% 宽度的过滤条件挡掉了\n"
                 + "· 修复 OCR 期间面板位置下方点不动（改为真正移除窗口，而不是设为不可见）\n"
                 + "· 首页拆成 状态 / 识别 / 日志 / 关于 四个顶部选项卡\n"
@@ -1014,7 +1151,7 @@ public class MainActivity extends Activity {
         button.setAllCaps(false);
         button.setTextSize(14);
         button.setTextColor(COLOR_TEXT);
-        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFFE7ECF5));
+        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(COLOR_BTN_SECONDARY));
         return button;
     }
 
