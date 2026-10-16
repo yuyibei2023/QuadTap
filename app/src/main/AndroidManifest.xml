@@ -5,6 +5,18 @@
       因此不需要 SYSTEM_ALERT_WINDOW（"显示在其他应用上层"）权限。
     -->
 
+    <!--
+      Android 11（API 30）起有软件包可见性限制。声明这个 queries 之后才能列出
+      有启动图标的应用供用户选择白名单，而不必申请受 Play 严格审查的
+      QUERY_ALL_PACKAGES 权限。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"

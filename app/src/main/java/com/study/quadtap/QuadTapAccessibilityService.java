@@ -91,6 +91,11 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     private FrameLayout markLayer;
     private View picker;
 
+    /** 当前前台应用包名，用来决定面板是否显示。 */
+    private String foregroundPackage;
+    /** 面板当前是否已经挂在 WindowManager 上。 */
+    private boolean panelAttached = false;
+
     private final Map<String, Rect> targetBounds = new HashMap<>();
     private final Map<String, String> targetText = new HashMap<>();
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -120,7 +125,10 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     int lastFoundCount() { return lastFoundCount; }
 
     private final Runnable scanRunnable = new Runnable() {
-        @Override public void run() { scanAccessibilityTree(false); }
+        @Override public void run() {
+            refreshForegroundPackage();
+            if (panelAttached) scanAccessibilityTree(false);
+        }
     };
     private final Runnable hideMarksRunnable = new Runnable() {
         @Override public void run() { if (markLayer != null) markLayer.removeAllViews(); }
@@ -156,6 +164,10 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 + "  OCR 客户端 = " + (recognizer != null));
         TapLog.add("开关: OCR=" + prefs.useOcr() + " 标记=" + prefs.showMarks()
                 + " 仅手动=" + prefs.manualOnly() + " 已校准=" + prefs.learnedCount() + "/4");
+        TapLog.add("限定应用: " + (prefs.restrictingToApps()
+                ? prefs.allowedPackages().toString()
+                : "未限制(所有应用都显示)"));
+        refreshForegroundPackage();
         scanAccessibilityTree(false);
         toast("面板已就绪：点击定位，长按手动校准");
     }
@@ -183,6 +195,15 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 && type != AccessibilityEvent.TYPE_VIEW_SCROLLED) {
             return;
         }
+
+        // 切换应用时重新判定面板是否该显示。
+        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            refreshForegroundPackage();
+        }
+
+        // 面板没挂上就没必要扫描节点树，省电。
+        if (!panelAttached) return;
+
         long now = System.currentTimeMillis();
         if (now - lastScanAt > 400) {
             lastScanAt = now;
@@ -279,9 +300,59 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
         try {
             windowManager.addView(panel, panelParams);
+            panelAttached = true;
         } catch (Exception e) {
             panel = null;
+            panelAttached = false;
         }
+    }
+
+    /** 从当前活动窗口读前台包名。自己的界面不参与判定，避免面板在设置页里被误隐藏。 */
+    private void refreshForegroundPackage() {
+        try {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return;
+            CharSequence pkg = root.getPackageName();
+            if (pkg == null) return;
+            String name = pkg.toString();
+            if (name.equals(getPackageName())) return;
+            if (name.equals(foregroundPackage)) return;
+            foregroundPackage = name;
+            applyPanelVisibility();
+        } catch (Exception ignored) { }
+    }
+
+    /**
+     * 按「限定显示的应用」决定面板挂上还是摘掉。
+     *
+     * 这里用真正 addView/removeView，而不是 setVisibility：INVISIBLE 的窗口仍然存在，
+     * 依然会吃掉它覆盖区域的触摸事件，会让下面的应用点不动。
+     */
+    private void applyPanelVisibility() {
+        if (panel == null || windowManager == null || panelParams == null) return;
+        if (busy) return;   // 正在截屏识别，等 finishOcr 再统一处理
+
+        boolean shouldShow = prefs.isPackageAllowed(foregroundPackage);
+        if (shouldShow == panelAttached) return;
+
+        if (shouldShow) {
+            panel.setVisibility(View.VISIBLE);
+            try {
+                windowManager.addView(panel, panelParams);
+                panelAttached = true;
+            } catch (Exception e) {
+                panelAttached = false;
+            }
+        } else {
+            cancelPicker();
+            if (markLayer != null) markLayer.removeAllViews();
+            try {
+                windowManager.removeView(panel);
+            } catch (Exception ignored) { }
+            panelAttached = false;
+        }
+        TapLog.add("面板" + (shouldShow ? "显示" : "隐藏")
+                + (prefs.restrictingToApps() ? " (前台=" + foregroundPackage + ")" : " (未限定应用)"));
     }
 
     private boolean onPanelTouch(MotionEvent event) {
@@ -1068,7 +1139,11 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     private void finishOcr() {
         busy = false;
         handler.post(new Runnable() {
-            @Override public void run() { setOverlaysVisible(true); }
+            @Override public void run() {
+                setOverlaysVisible(true);
+                // 识别期间可能切换了应用，这里统一补一次显示判定。
+                applyPanelVisibility();
+            }
         });
     }
 

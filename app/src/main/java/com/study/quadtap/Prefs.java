@@ -3,6 +3,9 @@ package com.study.quadtap;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import java.util.LinkedHashSet;
+import java.util.Set;
+
 /**
  * 轻量设置存储：悬浮面板位置、手动校准得到的选项坐标，以及各项开关。
  *
@@ -17,6 +20,7 @@ final class Prefs {
     private static final String K_SHOW_MARKS = "show_marks";
     private static final String K_MANUAL_ONLY = "manual_only";
     private static final String K_LEARNED = "learned_";
+    private static final String K_ALLOWED = "allowed_packages";
     private static final String[] LABELS = {"A", "B", "C", "D"};
 
     private final SharedPreferences sp;
@@ -78,4 +82,35 @@ final class Prefs {
     }
 
     boolean anyLearned() { return learnedCount() > 0; }
+
+    // ------------------------------------------------------------ 限定显示的应用
+
+    /** 面板只在这些应用里显示。返回副本 —— getStringSet 的返回值不允许修改。 */
+    Set<String> allowedPackages() {
+        Set<String> stored = sp.getStringSet(K_ALLOWED, null);
+        if (stored == null || stored.isEmpty()) return new LinkedHashSet<String>();
+        return new LinkedHashSet<String>(stored);
+    }
+
+    void setAllowedPackages(Set<String> packages) {
+        sp.edit().putStringSet(K_ALLOWED, new LinkedHashSet<String>(packages)).apply();
+    }
+
+    void clearAllowedPackages() { sp.edit().remove(K_ALLOWED).apply(); }
+
+    int allowedCount() { return allowedPackages().size(); }
+
+    /** 列表为空表示不限制（所有应用都显示）。 */
+    boolean restrictingToApps() { return allowedCount() > 0; }
+
+    /**
+     * 当前前台应用是否允许显示面板。
+     * 没选任何应用时一律允许；包名未知时也允许，避免误隐藏。
+     */
+    boolean isPackageAllowed(String packageName) {
+        Set<String> allowed = allowedPackages();
+        if (allowed.isEmpty()) return true;
+        if (packageName == null) return true;
+        return allowed.contains(packageName);
+    }
 }

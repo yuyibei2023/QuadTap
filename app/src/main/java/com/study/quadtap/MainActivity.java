@@ -1,7 +1,11 @@
 package com.study.quadtap;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
@@ -17,6 +21,16 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.text.Collator;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+
 public class MainActivity extends Activity {
 
     /** 界面上最多显示多少行日志。完整日志仍然可以复制/分享。 */
@@ -26,6 +40,7 @@ public class MainActivity extends Activity {
     private TextView statusLine;
     private TextView detailLine;
     private TextView logView;
+    private TextView appScopeLine;
 
     private int dp(float value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
@@ -152,6 +167,39 @@ public class MainActivity extends Activity {
             }
         });
 
+        // ---- 限定显示的应用 ----
+        page.addView(sectionTitle("限定显示的应用"), margins(-1, -2, 26, 0));
+
+        TextView scopeHint = new TextView(this);
+        scopeHint.setText("默认面板在所有应用上都显示。选定应用后，面板只在那些应用位于前台时出现，"
+                + "切到其它应用会被真正移除（不是变透明），既不遮挡也不会抢触摸。");
+        scopeHint.setTextSize(13);
+        scopeHint.setTextColor(0xFF657086);
+        scopeHint.setLineSpacing(dp(3), 1f);
+        page.addView(scopeHint, margins(-1, -2, 8, 0));
+
+        appScopeLine = new TextView(this);
+        appScopeLine.setTextSize(13);
+        appScopeLine.setTextColor(0xFF172033);
+        appScopeLine.setLineSpacing(dp(3), 1f);
+        page.addView(appScopeLine, margins(-1, -2, 6, 0));
+
+        Button pickApps = secondaryButton("选择应用");
+        page.addView(pickApps, margins(-1, dp(48), 8, 0));
+        pickApps.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { showAppPicker(); }
+        });
+
+        Button clearApps = secondaryButton("取消限定（所有应用都显示）");
+        page.addView(clearApps, margins(-1, dp(48), 8, 0));
+        clearApps.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                prefs.clearAllowedPackages();
+                refreshStatus();
+                Toast.makeText(MainActivity.this, "已取消限定", Toast.LENGTH_SHORT).show();
+            }
+        });
+
         TextView foot = new TextView(this);
         foot.setText("隐私说明：屏幕内容仅用于本机识别选项位置，不会上传。"
                 + "请仅在你有权操作的应用中使用，并遵守目标应用的规则。");
@@ -255,6 +303,103 @@ public class MainActivity extends Activity {
             detail.append("\n请先开启无障碍服务，面板才会出现。");
         }
         detailLine.setText(detail.toString());
+
+        if (appScopeLine != null) {
+            Set<String> allowed = prefs.allowedPackages();
+            if (allowed.isEmpty()) {
+                appScopeLine.setText("当前：未限定，所有应用都会显示面板");
+            } else {
+                appScopeLine.setText("当前：仅在 " + allowed.size() + " 个应用中显示\n"
+                        + describeAllowed(allowed));
+            }
+        }
+    }
+
+    private String describeAllowed(Set<String> packages) {
+        PackageManager manager = getPackageManager();
+        StringBuilder builder = new StringBuilder();
+        for (String pkg : packages) {
+            if (builder.length() > 0) builder.append('、');
+            String label = pkg;
+            try {
+                label = manager.getApplicationLabel(manager.getApplicationInfo(pkg, 0)).toString();
+            } catch (Exception ignored) { }
+            builder.append(label);
+        }
+        return builder.toString();
+    }
+
+    /** 列出所有有启动图标的已安装应用，多选保存为白名单。 */
+    private void showAppPicker() {
+        Intent launcher = new Intent(Intent.ACTION_MAIN);
+        launcher.addCategory(Intent.CATEGORY_LAUNCHER);
+
+        List<ResolveInfo> resolved;
+        try {
+            resolved = getPackageManager().queryIntentActivities(launcher, 0);
+        } catch (Exception e) {
+            resolved = null;
+        }
+        if (resolved == null || resolved.isEmpty()) {
+            Toast.makeText(this, "没有读到可选择的引用", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // 同一个包可能有多个入口，按包名去重。
+        final LinkedHashMap<String, String> labelOf = new LinkedHashMap<String, String>();
+        PackageManager manager = getPackageManager();
+        for (ResolveInfo info : resolved) {
+            if (info == null || info.activityInfo == null) continue;
+            String pkg = info.activityInfo.packageName;
+            if (pkg == null || pkg.equals(getPackageName())) continue;
+            if (labelOf.containsKey(pkg)) continue;
+            CharSequence label = info.loadLabel(manager);
+            labelOf.put(pkg, label == null ? pkg : label.toString());
+        }
+        if (labelOf.isEmpty()) {
+            Toast.makeText(this, "没有读到可选择的引用", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        final List<String> packages = new ArrayList<String>(labelOf.keySet());
+        final Collator collator = Collator.getInstance(Locale.CHINA);
+        Collections.sort(packages, new Comparator<String>() {
+            @Override public int compare(String a, String b) {
+                return collator.compare(labelOf.get(a), labelOf.get(b));
+            }
+        });
+
+        Set<String> allowed = prefs.allowedPackages();
+        final CharSequence[] items = new CharSequence[packages.size()];
+        final boolean[] checked = new boolean[packages.size()];
+        for (int i = 0; i < packages.size(); i++) {
+            items[i] = labelOf.get(packages.get(i));
+            checked[i] = allowed.contains(packages.get(i));
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("选择要显示面板的应用")
+                .setMultiChoiceItems(items, checked, new DialogInterface.OnMultiChoiceClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which, boolean isChecked) {
+                        checked[which] = isChecked;
+                    }
+                })
+                .setPositiveButton("保存", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which) {
+                        Set<String> result = new LinkedHashSet<String>();
+                        for (int i = 0; i < packages.size(); i++) {
+                            if (checked[i]) result.add(packages.get(i));
+                        }
+                        prefs.setAllowedPackages(result);
+                        refreshStatus();
+                        Toast.makeText(MainActivity.this,
+                                result.isEmpty() ? "未选择应用，恢复为所有应用都显示"
+                                        : "已限定 " + result.size() + " 个应用",
+                                Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     /** 从系统设置里确认本服务是否被勾选，即使此刻还没连接也有效。 */
