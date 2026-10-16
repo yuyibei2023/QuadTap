@@ -84,6 +84,45 @@ jobs:
             cp CHANGELOG.md RELEASE_NOTES.md
           fi
 
+      - name: Append screenshots to release notes
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(docs/screenshots/*.png docs/screenshots/*.jpg docs/screenshots/*.jpeg)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "docs/screenshots/ 下还没有图片，跳过截图区。"
+            exit 0
+          fi
+
+          # 标题优先取 captions.txt 里的映射，没有就用文件名。
+          caption_for() {
+            local name="$1" stem="${1%.*}" line
+            if [ -f docs/screenshots/captions.txt ]; then
+              line="$(grep -m1 "^${name}=" docs/screenshots/captions.txt || true)"
+              if [ -n "$line" ]; then printf '%s' "${line#*=}"; return 0; fi
+              line="$(grep -m1 "^${stem}=" docs/screenshots/captions.txt || true)"
+              if [ -n "$line" ]; then printf '%s' "${line#*=}"; return 0; fi
+            fi
+            printf '%s' "$stem"
+          }
+
+          # 指向 main 而不是标签：这样"先加图片、后发版"也能正常显示。
+          BASE="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/docs/screenshots"
+          {
+            echo ""
+            echo "## 界面截图"
+            echo ""
+            for f in "${files[@]}"; do
+              name="$(basename "$f")"
+              echo "![$(caption_for "$name")](${BASE}/${name})"
+              echo ""
+            done
+          } > SCREENSHOTS.md
+
+          cat RELEASE_NOTES.md SCREENSHOTS.md > MERGED.md
+          mv MERGED.md RELEASE_NOTES.md
+          echo "已追加 ${#files[@]} 张截图"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
