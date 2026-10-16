@@ -142,6 +142,14 @@ final class Prefs {
 
     void setHideOnIme(boolean value) { sp.edit().putBoolean(K_HIDE_ON_IME, value).apply(); }
 
+    /**
+     * 把悬浮面板的位置和大小恢复成默认值。
+     * 清掉已保存的坐标后，下次重建面板会回落到贴右边缘的默认位置。
+     */
+    void resetPanelAppearance() {
+        sp.edit().remove(K_PANEL_X).remove(K_PANEL_Y).remove(K_CELL_SIZE).apply();
+    }
+
     // ------------------------------------------------------------ 应用内更新
 
     /** 打开应用时是否自动检查更新。 */

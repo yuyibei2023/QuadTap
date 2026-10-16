@@ -16,6 +16,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.CompoundButton;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -64,6 +65,14 @@ public class MainActivity extends Activity {
     private boolean checkingUpdate = false;
     private AlertDialog downloadDialog;
 
+    // 顶部选项卡：四个页面一次性建好，切换只改可见性
+    private LinearLayout tabBar;
+    private FrameLayout pageContainer;
+    private final List<View> pages = new ArrayList<View>();
+    private final List<TextView> tabLabels = new ArrayList<TextView>();
+    private final List<View> tabIndicators = new ArrayList<View>();
+    private int currentTab = 0;
+
     private int dp(float value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
@@ -75,21 +84,62 @@ public class MainActivity extends Activity {
         getWindow().setNavigationBarColor(COLOR_BG);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
 
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(COLOR_BG);
+
+        TextView appTitle = new TextView(this);
+        appTitle.setText(R.string.app_name);
+        appTitle.setTextSize(19);
+        appTitle.setTextColor(COLOR_TITLE);
+        appTitle.setTypeface(null, Typeface.BOLD);
+        appTitle.setPadding(dp(18), dp(16), dp(18), dp(10));
+        root.addView(appTitle, new LinearLayout.LayoutParams(-1, -2));
+
+        root.addView(buildTabBar(), new LinearLayout.LayoutParams(-1, -2));
+
+        pageContainer = new FrameLayout(this);
+        root.addView(pageContainer, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        // 状态
+        LinearLayout tabStatus = newPage();
+        buildHeader(tabStatus);
+        buildStatusCard(tabStatus);
+        buildUpdateCard(tabStatus);
+        buildFlowCard(tabStatus);
+        addPage("状态", tabStatus);
+
+        // 识别
+        LinearLayout tabRecognition = newPage();
+        buildScopeCard(tabRecognition);
+        buildRecognitionCard(tabRecognition);
+        buildPanelCard(tabRecognition);
+        addPage("识别", tabRecognition);
+
+        // 日志
+        LinearLayout tabLog = newPage();
+        buildLogCard(tabLog);
+        addPage("日志", tabLog);
+
+        // 关于
+        LinearLayout tabAbout = newPage();
+        buildAboutCard(tabAbout);
+        buildFooter(tabAbout);
+        addPage("关于", tabAbout);
+
+        setContentView(root);
+        selectTab(0);
+    }
+
+    private LinearLayout newPage() {
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(dp(16), dp(24), dp(16), dp(32));
+        page.setPadding(dp(16), dp(14), dp(16), dp(32));
         page.setBackgroundColor(COLOR_BG);
+        return page;
+    }
 
-        buildHeader(page);
-        buildStatusCard(page);
-        buildUpdateCard(page);
-        buildFlowCard(page);
-        buildScopeCard(page);
-        buildRecognitionCard(page);
-        buildPanelCard(page);
-        buildLogCard(page);
-        buildAboutCard(page);
-
+    private void buildFooter(LinearLayout page) {
         TextView foot = new TextView(this);
         foot.setText("隐私说明：屏幕内容仅用于本机识别选项位置，不会上传到任何服务器。"
                 + "请仅在你有权操作的应用中使用，并遵守目标应用的规则。");
@@ -97,11 +147,72 @@ public class MainActivity extends Activity {
         foot.setTextColor(COLOR_HINT);
         foot.setLineSpacing(dp(4), 1f);
         page.addView(foot, topMargin(22));
+    }
+
+    // ------------------------------------------------------------------ 顶部选项卡
+
+    private LinearLayout buildTabBar() {
+        tabBar = new LinearLayout(this);
+        tabBar.setOrientation(LinearLayout.HORIZONTAL);
+        tabBar.setBackgroundColor(COLOR_CARD);
+        tabBar.setPadding(dp(6), dp(4), dp(6), 0);
+        GradientDrawable bottom = new GradientDrawable();
+        bottom.setColor(COLOR_CARD);
+        tabBar.setBackground(bottom);
+        return tabBar;
+    }
+
+    /** 新增一个选项卡 + 对应页面。页面先全部建好，切换只改可见性。 */
+    private void addPage(final String title, LinearLayout content) {
+        final int index = pages.size();
+
+        LinearLayout tab = new LinearLayout(this);
+        tab.setOrientation(LinearLayout.VERTICAL);
+        tab.setGravity(Gravity.CENTER);
+
+        TextView label = new TextView(this);
+        label.setText(title);
+        label.setTextSize(14);
+        label.setGravity(Gravity.CENTER);
+        label.setPadding(0, dp(10), 0, dp(8));
+        tab.addView(label, new LinearLayout.LayoutParams(-1, -2));
+
+        View indicator = new View(this);
+        LinearLayout.LayoutParams indicatorParams = new LinearLayout.LayoutParams(dp(28), dp(3));
+        indicatorParams.gravity = Gravity.CENTER_HORIZONTAL;
+        tab.addView(indicator, indicatorParams);
+
+        tab.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { selectTab(index); }
+        });
+
+        tabBar.addView(tab, new LinearLayout.LayoutParams(0, -2, 1f));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(COLOR_BG);
-        scroll.addView(page);
-        setContentView(scroll);
+        scroll.addView(content);
+        scroll.setVisibility(View.GONE);
+        pageContainer.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+
+        pages.add(scroll);
+        tabLabels.add(label);
+        tabIndicators.add(indicator);
+    }
+
+    private void selectTab(int index) {
+        if (index < 0 || index >= pages.size()) return;
+        currentTab = index;
+        for (int i = 0; i < pages.size(); i++) {
+            boolean active = i == index;
+            pages.get(i).setVisibility(active ? View.VISIBLE : View.GONE);
+            tabLabels.get(i).setTextColor(active ? COLOR_ACCENT : COLOR_HINT);
+            tabLabels.get(i).setTypeface(null, active ? Typeface.BOLD : Typeface.NORMAL);
+            GradientDrawable bar = new GradientDrawable();
+            bar.setColor(active ? COLOR_ACCENT : 0x00000000);
+            bar.setCornerRadius(dp(2));
+            tabIndicators.get(i).setBackground(bar);
+        }
+        refreshStatus();
     }
 
     @Override protected void onResume() {
@@ -116,20 +227,14 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------ 各区块
 
     private void buildHeader(LinearLayout page) {
-        TextView title = new TextView(this);
-        title.setText("四格自动校准");
-        title.setTextSize(24);
-        title.setTextColor(COLOR_TITLE);
-        title.setTypeface(null, Typeface.BOLD);
-        page.addView(title);
-
+        // 应用名已经放在顶部常驻标题栏里，这里只留一句说明
         TextView sub = new TextView(this);
         sub.setText("把屏幕上的选项位置映射到固定的 A/B/C/D 四格悬浮面板。"
                 + "不判断答案，只在你主动点格子时点击对应选项。");
         sub.setTextSize(13);
         sub.setTextColor(COLOR_HINT);
         sub.setLineSpacing(dp(4), 1f);
-        page.addView(sub, topMargin(6));
+        page.addView(sub);
     }
 
     private void buildStatusCard(LinearLayout page) {
@@ -524,6 +629,21 @@ public class MainActivity extends Activity {
         TextView imeHint = hintText("打字时面板会挡住候选栏，开启后检测到输入法窗口就自动收起。");
         card.addView(imeHint, topMargin(0));
 
+        Button reset = secondaryButton("恢复默认位置与大小");
+        card.addView(reset, topMarginSized(14, 44));
+        reset.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                prefs.resetPanelAppearance();
+                applyToService();
+                refreshStatus();
+                toast("面板已恢复到右边缘默认位置，方块 " + Prefs.DEFAULT_CELL_SIZE_DP + "dp");
+            }
+        });
+
+        TextView resetHint = hintText("面板被拖到屏幕外、或大小调乱了的时候用这个。"
+                + "只重置位置和大小，已校准的选项坐标和开关都不受影响。");
+        card.addView(resetHint, topMargin(6));
+
         page.addView(card, topMargin(12));
     }
 
@@ -581,39 +701,44 @@ public class MainActivity extends Activity {
     }
 
     private void buildAboutCard(LinearLayout page) {
-        CollapsibleCard section = new CollapsibleCard("技术与更新日志", false);
-
-        section.content.addView(subTitle("使用的技术"));
-        section.content.addView(hintText(
+        LinearLayout tech = card();
+        tech.addView(cardTitle("使用的技术"));
+        tech.addView(hintText(
                 "· Java / Android SDK，minSdk 26，compileSdk / targetSdk 35\n"
                 + "· AccessibilityService：读取节点树定位选项\n"
                 + "· TYPE_ACCESSIBILITY_OVERLAY 悬浮窗（因此不需要 SYSTEM_ALERT_WINDOW 权限）\n"
                 + "· dispatchGesture 派发手势点击\n"
                 + "· takeScreenshot（API 30+）截屏 + Google ML Kit 中文文字识别作为回退\n"
+                + "· androidx.core 的 FileProvider + 系统安装器，实现应用内更新\n"
                 + "· SharedPreferences 保存设置与校准坐标\n"
-                + "· 界面全部用原生 View 以代码构建，没有引入任何第三方 UI 框架\n"
-                + "· 未申请 QUERY_ALL_PACKAGES，只用 <queries> 列出可启动的应用"));
+                + "· 界面全部用原生 View 以代码构建，没有引入第三方 UI 框架\n"
+                + "· 未申请 QUERY_ALL_PACKAGES，只用 <queries> 列出可启动的应用"), topMargin(8));
+        page.addView(tech, topMargin(12));
 
-        section.content.addView(subTitle("更新日志"));
-        section.content.addView(hintText(
-                "V1.5\n"
-                + "· 首页改为卡片式布局，操作流程、技术说明、更新日志都写在应用内\n"
-                + "· 诊断日志与关于信息改为可折叠，不再需要长距离滑动\n"
-                + "· 方块大小可在应用内调节（34–76dp），松手即时生效\n"
-                + "· 新增「输入法弹出时隐藏面板」，默认开启\n\n"
+        CollapsibleCard log = new CollapsibleCard("完整更新日志", false);
+        log.content.addView(hintText(
+                "V1.8\n"
+                + "· 修复判断题完全失效：选项行是满屏宽，被 90% 宽度的过滤条件挡掉了\n"
+                + "· 修复 OCR 期间面板位置下方点不动（改为真正移除窗口，而不是设为不可见）\n"
+                + "· 首页拆成 状态 / 识别 / 日志 / 关于 四个顶部选项卡\n"
+                + "· 悬浮面板新增「恢复默认位置与大小」\n\n"
+                + "V1.7\n"
+                + "· 新增应用内更新：检查新版本、下载、交给系统安装器\n"
+                + "· 首页显示当前版本号，可开关启动时自动检查\n\n"
+                + "V1.6\n"
+                + "· 接入正式签名，发布的 APK 带签名校验\n\n"
+                + "V1.5\n"
+                + "· 卡片式首页、日志可折叠、方块大小可调、输入法弹出时隐藏面板\n\n"
                 + "V1.4\n"
-                + "· 新增「限定显示的应用」白名单，切到其它应用会真正移除面板\n\n"
+                + "· 新增「限定显示的应用」白名单\n\n"
                 + "V1.3\n"
-                + "· 新增位置兜底：选项字母被画成图片时，按几何特征找出一列选项行依次映射 A/B/C/D\n\n"
+                + "· 位置兜底：选项字母被画成图片时，按几何特征映射 A/B/C/D\n\n"
                 + "V1.2\n"
-                + "· 新增诊断日志\n"
-                + "· 修复 4 选项题目整体失效：顺序检查不再丢弃全部结果\n\n"
+                + "· 新增诊断日志；修复 4 选项题目整体失效\n\n"
                 + "V1.1\n"
-                + "· 修复三处导致功能不可用的问题：缺少 canTakeScreenshot 能力位、"
-                + "截屏 HARDWARE 位图未转 ARGB_8888、选项标签只做全等比较\n"
-                + "· 新增可拖动吸附面板、长按手动校准、定位范围可视化、状态页"));
-
-        page.addView(section.root, topMargin(12));
+                + "· 修复截屏能力位、硬件位图、选项匹配三处致命缺陷\n"
+                + "· 新增可拖动吸附面板、长按手动校准、定位范围可视化"), topMargin(8));
+        page.addView(log.root, topMargin(12));
     }
 
     // ------------------------------------------------------------------ 状态刷新

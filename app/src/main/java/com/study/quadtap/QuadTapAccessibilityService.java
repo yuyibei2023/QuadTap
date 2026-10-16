@@ -801,12 +801,21 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 if (raw.length() <= MAX_LABEL_TEXT) {
                     String normalized = normalize(raw);
                     String key = labelOf(normalized);
-                    if (key == null) key = judgeKeyOf(normalized);
+                    boolean letterLabel = key != null;
+                    if (!letterLabel) key = judgeKeyOf(normalized);
                     if (key != null) {
                         if (!bounds.isEmpty()) {
                             Rect row = expandToRow(node, bounds);
                             if (row != null && !row.isEmpty()) {
                                 out.get(key).add(new Candidate(row, raw, clickable, depth));
+                                // 判断题的「正确/错误」两行也塞进位置兜底的原料。
+                                // 原先它们只进 out 不进 rows，等于只有一条路，
+                                // 那条路一被过滤就彻底没戏。
+                                if (!letterLabel && clickable
+                                        && raw.length() <= MAX_ROW_TEXT
+                                        && row.height() >= dp(MIN_ROW_HEIGHT_DP)) {
+                                    rows.add(new Candidate(new Rect(row), raw, true, depth));
+                                }
                             }
                         }
                     } else if (clickable && !bounds.isEmpty()
@@ -877,7 +886,8 @@ public class QuadTapAccessibilityService extends AccessibilityService {
      */
     private Rect expandToRow(AccessibilityNodeInfo node, Rect fallback) {
         Point size = screenSize();
-        int maxWidth = (int) (size.x * 0.9f);
+        // 同样放到整屏宽，否则满屏宽的选项行在第一轮就被 break 掉。
+        int maxWidth = size.x;
         int maxHeight = dp(160);
         AccessibilityNodeInfo current = node;
         try {
@@ -995,7 +1005,10 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     private Candidate bestCandidate(List<Candidate> candidates, Point size) {
         if (candidates == null || candidates.isEmpty()) return null;
 
-        int maxWidth = (int) (size.x * 0.9f);
+        // 宽度上限放到整屏宽：真实题库的选项行常常是满屏宽（实测 1256/1256），
+        // 早先用 90% 当上限，把整行选项全过滤掉了 —— 判断题因此完全失效。
+        // 真正能挡住"整屏容器"的是高度上限和后面的评分。
+        int maxWidth = size.x;
         int maxHeight = (int) (size.y * 0.4f);
 
         Candidate best = null;
@@ -1239,10 +1252,31 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         });
     }
 
+    /**
+     * 截屏前后收起/恢复悬浮窗 —— 自己的窗口会被一起截进图里。
+     *
+     * 这里用真正的 addView/removeView，而不是 setVisibility(INVISIBLE)：
+     * 不可见的窗口依然存在于 WindowManager 上，依然会吃掉它覆盖区域的触摸事件。
+     * 之前 OCR 那 1～2 秒里，面板位置下面的应用是点不动的。
+     */
     private void setOverlaysVisible(boolean visible) {
-        if (panel != null) panel.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
-        // 自己的悬浮窗会被一起截进图里，识别前必须清掉。
-        if (!visible && markLayer != null) markLayer.removeAllViews();
+        if (markLayer != null && !visible) markLayer.removeAllViews();
+        if (panel == null || windowManager == null || panelParams == null) return;
+
+        if (visible) {
+            if (panelAttached) return;
+            panel.setVisibility(View.VISIBLE);
+            try {
+                windowManager.addView(panel, panelParams);
+                panelAttached = true;
+            } catch (Exception ignored) { }
+        } else {
+            if (!panelAttached) return;
+            try {
+                windowManager.removeView(panel);
+            } catch (Exception ignored) { }
+            panelAttached = false;
+        }
     }
 
     private void applyOcrResult(String requested, Map<String, Rect> ocr) {
