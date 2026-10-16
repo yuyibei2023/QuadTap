@@ -6,6 +6,7 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -66,6 +67,8 @@ public class MainActivity extends Activity {
     private int COLOR_WARN;
     private int COLOR_BAD;
     private int COLOR_BTN_SECONDARY;
+    private int COLOR_ACCENT_PRESSED;
+    private int COLOR_BTN_PRESSED;
     private int COLOR_LOG_BG;
     private int COLOR_LOG_TEXT;
 
@@ -81,10 +84,12 @@ public class MainActivity extends Activity {
             COLOR_TEXT = 0xFFC4CDDB;
             COLOR_HINT = 0xFF8994A7;
             COLOR_ACCENT = 0xFF5B93F7;
+            COLOR_ACCENT_PRESSED = 0xFF7FAEFA;
             COLOR_OK = 0xFF4CAF7D;
             COLOR_WARN = 0xFFD9A544;
             COLOR_BAD = 0xFFE0705F;
             COLOR_BTN_SECONDARY = 0xFF2B3542;
+            COLOR_BTN_PRESSED = 0xFF3C4856;
             COLOR_LOG_BG = 0xFF0A0E14;
             COLOR_LOG_TEXT = 0xFFBAC4D4;
         } else {
@@ -95,10 +100,12 @@ public class MainActivity extends Activity {
             COLOR_TEXT = 0xFF33405A;
             COLOR_HINT = 0xFF7C879C;
             COLOR_ACCENT = 0xFF3478F6;
+            COLOR_ACCENT_PRESSED = 0xFF255FC9;
             COLOR_OK = 0xFF1F8A4C;
             COLOR_WARN = 0xFFB07A16;
             COLOR_BAD = 0xFFC0392B;
             COLOR_BTN_SECONDARY = 0xFFE7ECF5;
+            COLOR_BTN_PRESSED = 0xFFD3DCEA;
             COLOR_LOG_BG = 0xFF1B2130;
             COLOR_LOG_TEXT = 0xFFD5DCE8;
         }
@@ -126,6 +133,8 @@ public class MainActivity extends Activity {
     private TextView sizeLabel;
     private TextView logView;
     private TextView versionLine;
+    /** 状态卡片左侧的小圆点，颜色跟随服务状态。 */
+    private View statusDot;
     /** 自动检查更新每次启动只做一次，避免每次回到前台都请求网络。 */
     private boolean autoCheckDone = false;
     /** 正在检查时不要被 refreshStatus 覆盖掉提示文字。 */
@@ -173,6 +182,11 @@ public class MainActivity extends Activity {
         root.addView(appTitle, new LinearLayout.LayoutParams(-1, -2));
 
         root.addView(buildTabBar(), new LinearLayout.LayoutParams(-1, -2));
+
+        // 选项卡下面一条细分隔线，让标题栏和内容区层次更清楚
+        View tabDivider = new View(this);
+        tabDivider.setBackgroundColor(COLOR_STROKE);
+        root.addView(tabDivider, new LinearLayout.LayoutParams(-1, Math.max(1, dp(1))));
 
         pageContainer = new FrameLayout(this);
         root.addView(pageContainer, new LinearLayout.LayoutParams(-1, 0, 1f));
@@ -248,10 +262,7 @@ public class MainActivity extends Activity {
         tabBar = new LinearLayout(this);
         tabBar.setOrientation(LinearLayout.HORIZONTAL);
         tabBar.setBackgroundColor(COLOR_CARD);
-        tabBar.setPadding(dp(6), dp(4), dp(6), 0);
-        GradientDrawable bottom = new GradientDrawable();
-        bottom.setColor(COLOR_CARD);
-        tabBar.setBackground(bottom);
+        tabBar.setPadding(dp(8), dp(6), dp(8), 0);
         return tabBar;
     }
 
@@ -271,7 +282,7 @@ public class MainActivity extends Activity {
         tab.addView(label, new LinearLayout.LayoutParams(-1, -2));
 
         View indicator = new View(this);
-        LinearLayout.LayoutParams indicatorParams = new LinearLayout.LayoutParams(dp(28), dp(3));
+        LinearLayout.LayoutParams indicatorParams = new LinearLayout.LayoutParams(dp(22), dp(3));
         indicatorParams.gravity = Gravity.CENTER_HORIZONTAL;
         tab.addView(indicator, indicatorParams);
 
@@ -332,25 +343,47 @@ public class MainActivity extends Activity {
 
     private void buildStatusCard(LinearLayout page) {
         LinearLayout card = card();
+
+        // 状态圆点和文字放同一行，运行状态一眼可见
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        statusDot = new View(this);
+        row.addView(statusDot, new LinearLayout.LayoutParams(dp(9), dp(9)));
+
         statusLine = new TextView(this);
         statusLine.setTextSize(17);
         statusLine.setTextColor(COLOR_TITLE);
         statusLine.setTypeface(null, Typeface.BOLD);
-        card.addView(statusLine);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(0, -2, 1f);
+        statusParams.leftMargin = dp(9);
+        row.addView(statusLine, statusParams);
+
+        card.addView(row);
 
         detailLine = new TextView(this);
         detailLine.setTextSize(13);
         detailLine.setTextColor(COLOR_HINT);
-        detailLine.setLineSpacing(dp(4), 1f);
-        card.addView(detailLine, topMargin(6));
+        detailLine.setLineSpacing(dp(5), 1f);
+        card.addView(detailLine, topMargin(8));
 
         Button enable = primaryButton("开启无障碍服务");
-        card.addView(enable, topMarginSized(14, 46));
+        card.addView(enable, topMarginSized(16, 48));
         enable.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { openAccessibilitySettings(); }
         });
 
         page.addView(card, topMargin(16));
+    }
+
+    /** 状态圆点用纯色圆形，不引入额外 drawable 资源。 */
+    private void setStatusDot(int color) {
+        if (statusDot == null) return;
+        GradientDrawable dot = new GradientDrawable();
+        dot.setShape(GradientDrawable.OVAL);
+        dot.setColor(color);
+        statusDot.setBackground(dot);
     }
 
     // ------------------------------------------------------------------ 版本与更新
@@ -851,7 +884,12 @@ public class MainActivity extends Activity {
 
         CollapsibleCard log = new CollapsibleCard("完整更新日志", false);
         log.content.addView(hintText(
-                "V1.9\n"
+                "V1.10\n"
+                + "· 界面打磨：卡片与按钮圆角统一、去掉多余阴影、增加按下反馈\n"
+                + "· 状态卡片新增状态色圆点；选项卡下加分隔线\n"
+                + "· 悬浮面板更紧凑、描边更干净，格子加按下缩放与变色\n"
+                + "· 仅外观改动，判定逻辑与操作方式未变\n\n"
+                + "V1.9\n"
                 + "· 修复顶部标题被状态栏挡住（Android 15 起强制边到边，需自己让出系统栏高度）\n"
                 + "· 新增主题切换：跟随系统 / 白天 / 黑夜\n\n"
                 + "V1.8\n"
@@ -891,12 +929,15 @@ public class MainActivity extends Activity {
         if (connected) {
             statusLine.setText("服务运行中");
             statusLine.setTextColor(COLOR_OK);
+            setStatusDot(COLOR_OK);
         } else if (enabled) {
             statusLine.setText("服务已开启，但尚未连接");
             statusLine.setTextColor(COLOR_WARN);
+            setStatusDot(COLOR_WARN);
         } else {
             statusLine.setText("服务未开启");
             statusLine.setTextColor(COLOR_BAD);
+            setStatusDot(COLOR_BAD);
         }
 
         StringBuilder detail = new StringBuilder();
@@ -1097,13 +1138,14 @@ public class MainActivity extends Activity {
     private LinearLayout card() {
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(dp(16), dp(14), dp(16), dp(16));
+        layout.setPadding(dp(16), dp(16), dp(16), dp(16));
         GradientDrawable background = new GradientDrawable();
         background.setColor(COLOR_CARD);
-        background.setCornerRadius(dp(16));
+        background.setCornerRadius(dp(18));
         background.setStroke(dp(1), COLOR_STROKE);
         layout.setBackground(background);
-        layout.setElevation(dp(1));
+        // 不加阴影：1dp 描边 + 干净的卡片底色已经足够区分层次，
+        // 也和 Material 3 的 outlined card 观感一致。
         return layout;
     }
 
@@ -1135,23 +1177,41 @@ public class MainActivity extends Activity {
         return view;
     }
 
+    /** 按下时变色的 ColorStateList。 */
+    private ColorStateList stateColor(int normal, int pressed) {
+        return new ColorStateList(
+                new int[][]{ new int[]{android.R.attr.state_pressed}, new int[]{} },
+                new int[]{ pressed, normal });
+    }
+
+    /** 统一的按钮样式：12dp 圆角、按下变色、去掉默认的立体抬起动画。 */
+    private void styleButton(Button button, int background, int pressedBackground, int textColor) {
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(background);
+        shape.setCornerRadius(dp(12));
+        button.setBackground(shape);
+        button.setBackgroundTintList(stateColor(background, pressedBackground));
+        button.setTextColor(textColor);
+        button.setAllCaps(false);
+        button.setStateListAnimator(null);
+        // 主题默认 minHeight 约 48dp，会把 44dp 的按钮顶高，这里放开
+        button.setMinimumHeight(0);
+        button.setMinHeight(0);
+    }
+
     private Button primaryButton(String text) {
         Button button = new Button(this);
         button.setText(text);
-        button.setAllCaps(false);
         button.setTextSize(15);
-        button.setTextColor(Color.WHITE);
-        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(COLOR_ACCENT));
+        styleButton(button, COLOR_ACCENT, COLOR_ACCENT_PRESSED, Color.WHITE);
         return button;
     }
 
     private Button secondaryButton(String text) {
         Button button = new Button(this);
         button.setText(text);
-        button.setAllCaps(false);
         button.setTextSize(14);
-        button.setTextColor(COLOR_TEXT);
-        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(COLOR_BTN_SECONDARY));
+        styleButton(button, COLOR_BTN_SECONDARY, COLOR_BTN_PRESSED, COLOR_TEXT);
         return button;
     }
 

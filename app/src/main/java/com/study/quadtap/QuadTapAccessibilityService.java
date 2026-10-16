@@ -85,6 +85,12 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     /** 同一个标签最多保留几个候选参与组合评分。 */
     private static final int MAX_CANDIDATES_PER_LABEL = 3;
 
+    // ---- 悬浮面板配色。A/B 用主色蓝，C/D 用同族的低饱和蓝灰，面板整体更协调。
+    private static final int CELL_BLUE = 0xFF3478F6;
+    private static final int CELL_BLUE_PRESSED = 0xFF255FC9;
+    private static final int CELL_BLUE_GRAY = 0xFF6B7B95;
+    private static final int CELL_BLUE_GRAY_PRESSED = 0xFF56637A;
+
     private WindowManager windowManager;
     private GridLayout panel;
     private WindowManager.LayoutParams panelParams;
@@ -264,19 +270,21 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         panel = new GridLayout(this);
         panel.setColumnCount(2);
         panel.setRowCount(2);
-        panel.setPadding(dp(5), dp(5), dp(5), dp(5));
+        panel.setPadding(dp(4), dp(4), dp(4), dp(4));
 
         GradientDrawable background = new GradientDrawable();
-        background.setColor(0xEFFFFFFF);
-        background.setCornerRadius(dp(16));
-        background.setStroke(dp(1), 0xFFCFD8E8);
+        background.setColor(0xF7FFFFFF);
+        background.setCornerRadius(dp(18));
+        background.setStroke(dp(1), 0xFFDCE3F1);
         panel.setBackground(background);
-        panel.setElevation(dp(8));
+        panel.setElevation(dp(6));
 
         int cellSize = prefs.cellSizeDp();
         int cellTextSize = Math.max(11, Math.round(cellSize * 0.355f));
-        int cellRadius = Math.round(cellSize * 0.23f);
-        int[] colors = {0xFF3478F6, 0xFF3478F6, 0xFF5A6B85, 0xFF5A6B85};
+        int cellRadius = Math.round(cellSize * 0.26f);
+        int[] colors = {CELL_BLUE, CELL_BLUE, CELL_BLUE_GRAY, CELL_BLUE_GRAY};
+        int[] pressedColors = {CELL_BLUE_PRESSED, CELL_BLUE_PRESSED,
+                CELL_BLUE_GRAY_PRESSED, CELL_BLUE_GRAY_PRESSED};
         for (int i = 0; i < LABELS.length; i++) {
             TextView cell = new TextView(this);
             cell.setText(LABELS[i]);
@@ -288,6 +296,10 @@ public class QuadTapAccessibilityService extends AccessibilityService {
             cellBackground.setColor(colors[i]);
             cellBackground.setCornerRadius(dp(cellRadius));
             cell.setBackground(cellBackground);
+            // 按下时变色，和轻微的缩放一起构成按下反馈
+            cell.setBackgroundTintList(new ColorStateList(
+                    new int[][]{ new int[]{android.R.attr.state_pressed}, new int[]{} },
+                    new int[]{ pressedColors[i], colors[i] }));
 
             GridLayout.LayoutParams cellParams = new GridLayout.LayoutParams();
             cellParams.width = dp(cellSize);
@@ -457,13 +469,18 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 downPanelX = panelParams.x;
                 downPanelY = panelParams.y;
                 pressedIndex = cellIndexAt(event.getX(), event.getY());
+                animateCellPress(pressedIndex, true);
                 return true;
 
             case MotionEvent.ACTION_MOVE: {
                 float dx = event.getRawX() - downRawX;
                 float dy = event.getRawY() - downRawY;
                 int slop = ViewConfiguration.get(this).getScaledTouchSlop();
-                if (!dragging && (Math.abs(dx) > slop || Math.abs(dy) > slop)) dragging = true;
+                if (!dragging && (Math.abs(dx) > slop || Math.abs(dy) > slop)) {
+                    dragging = true;
+                    // 开始拖动就不该再显示按下态
+                    animateCellPress(pressedIndex, false);
+                }
                 if (dragging) {
                     panelParams.x = clampX(downPanelX + (int) dx);
                     panelParams.y = clampY(downPanelY + (int) dy);
@@ -474,6 +491,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL: {
+                animateCellPress(pressedIndex, false);
                 if (dragging) {
                     snapToEdge();
                     prefs.setPanelPosition(panelParams.x, panelParams.y);
@@ -491,6 +509,23 @@ public class QuadTapAccessibilityService extends AccessibilityService {
             default:
                 return false;
         }
+    }
+
+    /**
+     * 格子的按下/抬起视觉反馈（轻微缩放）。
+     *
+     * 只改绘制缩放，不参与任何点击判定：cellIndexAt 用的是 getLeft/getRight 原始边界，
+     * 不受 scale 影响，所以判定逻辑一行都没动。
+     */
+    private void animateCellPress(int index, boolean pressed) {
+        if (panel == null || index < 0 || index >= panel.getChildCount()) return;
+        View cell = panel.getChildAt(index);
+        cell.animate().cancel();
+        cell.animate()
+                .scaleX(pressed ? 0.90f : 1f)
+                .scaleY(pressed ? 0.90f : 1f)
+                .setDuration(pressed ? 70 : 120)
+                .start();
     }
 
     /** 按子 View 的实际布局判断按到了哪一格。 */
