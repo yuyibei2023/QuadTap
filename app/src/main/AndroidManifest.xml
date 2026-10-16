@@ -1,23 +1,39 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!--
+      悬浮面板使用 TYPE_ACCESSIBILITY_OVERLAY，由无障碍服务本身授权，
+      因此不需要 SYSTEM_ALERT_WINDOW（"显示在其他应用上层"）权限。
+    -->
+
     <application
         android:allowBackup="false"
-        android:label="四格自动校准"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
         android:theme="@style/AppTheme"
         android:supportsRtl="true">
-        <activity android:name="com.study.quadtap.MainActivity" android:exported="true">
+
+        <activity
+            android:name="com.study.quadtap.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
         <service
             android:name="com.study.quadtap.QuadTapAccessibilityService"
-            android:label="四格自动校准服务"
+            android:label="@string/app_name"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true">
-            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
-            <meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service_config" />
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
         </service>
     </application>
 </manifest>

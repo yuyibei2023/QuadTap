@@ -2,59 +2,259 @@ package com.study.quadtap;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CompoundButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
 public class MainActivity extends Activity {
-    private int dp(float value) { return (int)(value * getResources().getDisplayMetrics().density + 0.5f); }
+
+    private Prefs prefs;
+    private TextView statusLine;
+    private TextView detailLine;
+
+    private int dp(float value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        prefs = new Prefs(this);
         getWindow().setStatusBarColor(0xFFF7F8FA);
         getWindow().setNavigationBarColor(0xFFF7F8FA);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(dp(22), dp(28), dp(22), dp(24));
+        page.setPadding(dp(22), dp(28), dp(22), dp(28));
         page.setBackgroundColor(0xFFF7F8FA);
 
         TextView title = new TextView(this);
-        title.setText("四格自动校准"); title.setTextSize(27); title.setTextColor(0xFF172033); title.setTypeface(null, 1);
+        title.setText("四格自动校准");
+        title.setTextSize(27);
+        title.setTextColor(0xFF172033);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
         page.addView(title);
+
         TextView subtitle = new TextView(this);
-        subtitle.setText("把屏幕选项映射到固定的四格悬浮面板。第一版使用无障碍控件定位，并在必要时尝试中文 OCR。\n\n所有识别都在本机完成；不会自动选择答案，只有你主动点击悬浮按钮时才会尝试点击目标选项。 ");
-        subtitle.setTextSize(15); subtitle.setTextColor(0xFF657086); subtitle.setLineSpacing(dp(4), 1f);
-        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-1, -2); sp.topMargin = dp(12); page.addView(subtitle, sp);
+        subtitle.setText("把屏幕选项映射到固定的四格悬浮面板。识别优先使用无障碍控件定位，"
+                + "失败时退回本机中文 OCR，也可以长按格子手动校准。\n\n"
+                + "所有识别都在本机完成；不会自动判断答案，只有你主动点击悬浮按钮时才会尝试点击目标选项。");
+        subtitle.setTextSize(15);
+        subtitle.setTextColor(0xFF657086);
+        subtitle.setLineSpacing(dp(4), 1f);
+        page.addView(subtitle, margins(-1, -2, 0, 12));
 
+        // ---- 状态卡片 ----
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+        GradientDrawable cardBackground = new GradientDrawable();
+        cardBackground.setColor(Color.WHITE);
+        cardBackground.setCornerRadius(dp(14));
+        cardBackground.setStroke(dp(1), 0xFFE3E8F0);
+        card.setBackground(cardBackground);
+
+        statusLine = new TextView(this);
+        statusLine.setTextSize(16);
+        statusLine.setTextColor(0xFF172033);
+        statusLine.setTypeface(null, android.graphics.Typeface.BOLD);
+        card.addView(statusLine);
+
+        detailLine = new TextView(this);
+        detailLine.setTextSize(13);
+        detailLine.setTextColor(0xFF657086);
+        detailLine.setLineSpacing(dp(3), 1f);
+        card.addView(detailLine, margins(-1, -2, 0, 6));
+
+        page.addView(card, margins(-1, -2, 18, 0));
+
+        // ---- 使用步骤 ----
         TextView steps = new TextView(this);
-        steps.setText("使用步骤\n1. 开启无障碍服务。\n2. 返回本应用，再打开驾考题目页面。\n3. 屏幕边缘会出现 A/B/C/D 四格面板。\n4. 点击 A/B/C/D，工具会先匹配页面控件；未找到时尝试 OCR 识别。\n5. 题目布局变化后会重新扫描。\n\n注意：不同驾考应用的控件结构可能不同，第一版无法保证所有界面都能准确识别。请先在非正式页面测试。 ");
-        steps.setTextSize(15); steps.setTextColor(0xFF30394A); steps.setLineSpacing(dp(5), 1f);
-        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-1, -2); tp.topMargin = dp(22); page.addView(steps, tp);
+        steps.setText("使用步骤\n"
+                + "1. 开启无障碍服务，并按系统提示允许相关权限。\n"
+                + "2. 打开题目页面，屏幕边缘会出现 A/B/C/D 四格面板。\n"
+                + "3. 拖动面板可以移到不挡题目的位置，松手后自动吸附到边缘。\n"
+                + "4. 点击 A/B/C/D 尝试点击对应选项；识别成功时会短暂画出识别范围。\n"
+                + "5. 长按某一格进入校准：面板会暂时隐藏，你直接点屏幕上该选项的真实位置即可。\n"
+                + "6. 题目布局变化后会自动重新扫描。");
+        steps.setTextSize(15);
+        steps.setTextColor(0xFF30394A);
+        steps.setLineSpacing(dp(5), 1f);
+        page.addView(steps, margins(-1, -2, 22, 0));
 
-        Button enable = button("开启无障碍服务");
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-1, dp(52)); bp.topMargin = dp(28); page.addView(enable, bp);
-        enable.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        Button enable = primaryButton("开启无障碍服务");
+        page.addView(enable, margins(-1, dp(52), 28, 0));
+        enable.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                try {
+                    startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                } catch (Exception e) {
+                    Toast.makeText(MainActivity.this, "无法打开无障碍设置", Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
 
-        Button refresh = button("查看权限 / 返回使用");
-        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, dp(52)); rp.topMargin = dp(12); page.addView(refresh, rp);
-        refresh.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        // ---- 开关 ----
+        page.addView(sectionTitle("识别选项"), margins(-1, -2, 26, 0));
+
+        Switch ocr = toggle("启用 OCR 回退（Android 11 及以上）", prefs.useOcr());
+        // 截屏 API 只有 Android 11（API 30）起才提供。
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            ocr.setEnabled(false);
+            ocr.setChecked(false);
+            ocr.setText("OCR 回退不可用（本机系统低于 Android 11）");
+        }
+        ocr.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.setUseOcr(isChecked);
+            }
+        });
+        page.addView(ocr, margins(-1, -2, 10, 0));
+
+        Switch marks = toggle("点击后显示识别范围", prefs.showMarks());
+        marks.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.setShowMarks(isChecked);
+            }
+        });
+        page.addView(marks, margins(-1, -2, 6, 0));
+
+        Switch manual = toggle("只使用已校准的位置（跳过自动识别）", prefs.manualOnly());
+        manual.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.setManualOnly(isChecked);
+            }
+        });
+        page.addView(manual, margins(-1, -2, 6, 0));
+
+        Button clear = secondaryButton("清除全部校准记录");
+        page.addView(clear, margins(-1, dp(48), 18, 0));
+        clear.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                prefs.clearLearned();
+                refreshStatus();
+                Toast.makeText(MainActivity.this, "已清除校准记录", Toast.LENGTH_SHORT).show();
+            }
+        });
 
         TextView foot = new TextView(this);
-        foot.setText("隐私说明：屏幕内容仅用于本机识别选项位置。请仅在你有权操作的应用中使用，并遵守目标应用的规则。");
-        foot.setTextSize(12); foot.setTextColor(0xFF8992A3); foot.setLineSpacing(dp(3), 1f);
-        LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(-1, -2); fp.topMargin = dp(22); page.addView(foot, fp);
+        foot.setText("隐私说明：屏幕内容仅用于本机识别选项位置，不会上传。"
+                + "请仅在你有权操作的应用中使用，并遵守目标应用的规则。");
+        foot.setTextSize(12);
+        foot.setTextColor(0xFF8992A3);
+        foot.setLineSpacing(dp(3), 1f);
+        page.addView(foot, margins(-1, -2, 24, 0));
 
-        ScrollView scroll = new ScrollView(this); scroll.addView(page); setContentView(scroll);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(page);
+        setContentView(scroll);
     }
 
-    private Button button(String text) {
-        Button b = new Button(this); b.setText(text); b.setAllCaps(false); b.setTextSize(16); b.setTextColor(0xFFFFFFFF); b.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF3478F6)); return b;
+    @Override protected void onResume() {
+        super.onResume();
+        refreshStatus();
+    }
+
+    private void refreshStatus() {
+        if (statusLine == null) return;
+
+        boolean enabled = isAccessibilityEnabled();
+        QuadTapAccessibilityService service = QuadTapAccessibilityService.get();
+        boolean connected = service != null;
+
+        if (connected) {
+            statusLine.setText("服务运行中");
+            statusLine.setTextColor(0xFF1F8A4C);
+        } else if (enabled) {
+            statusLine.setText("服务已开启，但尚未连接");
+            statusLine.setTextColor(0xFFB07A16);
+        } else {
+            statusLine.setText("服务未开启");
+            statusLine.setTextColor(0xFFC0392B);
+        }
+
+        StringBuilder detail = new StringBuilder();
+        detail.append("已校准选项：").append(prefs.learnedCount()).append("/4");
+        if (connected) {
+            int found = service.lastFoundCount();
+            detail.append("\n上次扫描识别到：").append(found).append(" 个选项");
+        }
+        if (!enabled) {
+            detail.append("\n请先开启无障碍服务，面板才会出现。");
+        }
+        detailLine.setText(detail.toString());
+    }
+
+    /** 从系统设置里确认本服务是否被勾选，即使此刻还没连接也有效。 */
+    private boolean isAccessibilityEnabled() {
+        try {
+            String enabledServices = Settings.Secure.getString(
+                    getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (enabledServices == null) return false;
+            String full = getPackageName() + "/" + QuadTapAccessibilityService.class.getName();
+            String shortForm = getPackageName() + "/.QuadTapAccessibilityService";
+            for (String entry : enabledServices.split(":")) {
+                if (entry.equalsIgnoreCase(full) || entry.equalsIgnoreCase(shortForm)) return true;
+            }
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    private LinearLayout.LayoutParams margins(int width, int height, int topMarginDp, int bottomMarginDp) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(width, height);
+        params.topMargin = dp(topMarginDp);
+        params.bottomMargin = dp(bottomMarginDp);
+        return params;
+    }
+
+    private TextView sectionTitle(String text) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(13);
+        view.setTextColor(0xFF8992A3);
+        view.setTypeface(null, android.graphics.Typeface.BOLD);
+        view.setLetterSpacing(0.06f);
+        return view;
+    }
+
+    private Switch toggle(String text, boolean checked) {
+        Switch view = new Switch(this);
+        view.setText(text);
+        view.setTextSize(15);
+        view.setTextColor(0xFF30394A);
+        view.setChecked(checked);
+        view.setPadding(0, dp(6), 0, dp(6));
+        return view;
+    }
+
+    private Button primaryButton(String text) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setTextSize(16);
+        button.setTextColor(Color.WHITE);
+        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF3478F6));
+        return button;
+    }
+
+    private Button secondaryButton(String text) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setTextSize(15);
+        button.setTextColor(0xFF30394A);
+        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFFE3E8F0));
+        return button;
     }
 }
