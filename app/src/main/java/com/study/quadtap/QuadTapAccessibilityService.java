@@ -93,6 +93,8 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
     /** 当前前台应用包名，用来决定面板是否显示。 */
     private String foregroundPackage;
+    /** 输入法当前是否可见。 */
+    private boolean imeVisible = false;
     /** 面板当前是否已经挂在 WindowManager 上。 */
     private boolean panelAttached = false;
 
@@ -109,6 +111,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     private volatile int lastFoundCount = 0;
     private long lastScanAt = 0;
     private long lastShotAt = 0;
+    private long lastImeCheckAt = 0;
 
     private float downRawX, downRawY;
     private int downPanelX, downPanelY;
@@ -126,7 +129,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
     private final Runnable scanRunnable = new Runnable() {
         @Override public void run() {
-            refreshForegroundPackage();
+            refreshWindowState();
             if (panelAttached) scanAccessibilityTree(false);
         }
     };
@@ -167,7 +170,8 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         TapLog.add("限定应用: " + (prefs.restrictingToApps()
                 ? prefs.allowedPackages().toString()
                 : "未限制(所有应用都显示)"));
-        refreshForegroundPackage();
+        TapLog.add("方块大小: " + prefs.cellSizeDp() + "dp   输入法弹出时隐藏: " + prefs.hideOnIme());
+        refreshWindowState();
         scanAccessibilityTree(false);
         toast("面板已就绪：点击定位，长按手动校准");
     }
@@ -188,17 +192,31 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
-        if (event == null || picker != null) return;
-        int type = event.getEventType();
-        if (type != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-                && type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-                && type != AccessibilityEvent.TYPE_VIEW_SCROLLED) {
-            return;
-        }
+        if (event == null) return;
 
-        // 切换应用时重新判定面板是否该显示。
-        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            refreshForegroundPackage();
+        int type = event.getEventType();
+        boolean windowChanged = type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                || type == AccessibilityEvent.TYPE_WINDOWS_CHANGED;
+        boolean contentChanged = type == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+                || type == AccessibilityEvent.TYPE_VIEW_SCROLLED;
+
+        // 切换应用、输入法弹出或收起都会走到这里。
+        if (windowChanged) refreshWindowState();
+
+        if (picker != null) return;
+        if (!windowChanged && !contentChanged) return;
+
+        // 输入法不一定每次都发 typeWindowsChanged，这里做一层节流的兜底复核。
+        if (contentChanged && prefs.hideOnIme()) {
+            long now = System.currentTimeMillis();
+            if (now - lastImeCheckAt > 500) {
+                lastImeCheckAt = now;
+                boolean ime = isImeVisible();
+                if (ime != imeVisible) {
+                    imeVisible = ime;
+                    applyPanelVisibility();
+                }
+            }
         }
 
         // 面板没挂上就没必要扫描节点树，省电。
@@ -255,22 +273,25 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         panel.setBackground(background);
         panel.setElevation(dp(8));
 
+        int cellSize = prefs.cellSizeDp();
+        int cellTextSize = Math.max(11, Math.round(cellSize * 0.355f));
+        int cellRadius = Math.round(cellSize * 0.23f);
         int[] colors = {0xFF3478F6, 0xFF3478F6, 0xFF5A6B85, 0xFF5A6B85};
         for (int i = 0; i < LABELS.length; i++) {
             TextView cell = new TextView(this);
             cell.setText(LABELS[i]);
-            cell.setTextSize(17);
+            cell.setTextSize(cellTextSize);
             cell.setTextColor(Color.WHITE);
             cell.setGravity(Gravity.CENTER);
             cell.setTypeface(null, android.graphics.Typeface.BOLD);
             GradientDrawable cellBackground = new GradientDrawable();
             cellBackground.setColor(colors[i]);
-            cellBackground.setCornerRadius(dp(11));
+            cellBackground.setCornerRadius(dp(cellRadius));
             cell.setBackground(cellBackground);
 
             GridLayout.LayoutParams cellParams = new GridLayout.LayoutParams();
-            cellParams.width = dp(48);
-            cellParams.height = dp(46);
+            cellParams.width = dp(cellSize);
+            cellParams.height = dp(cellSize - 2);
             cellParams.setMargins(dp(3), dp(3), dp(3), dp(3));
             panel.addView(cell, cellParams);
         }
@@ -293,7 +314,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         panelParams.gravity = Gravity.TOP | Gravity.START;
 
         Point size = screenSize();
-        int defaultX = Math.max(0, size.x - dp(132));
+        int defaultX = Math.max(0, size.x - estimatedPanelWidth() - dp(6));
         int defaultY = dp(200);
         panelParams.x = clampX(prefs.panelX(defaultX));
         panelParams.y = clampY(prefs.panelY(defaultY));
@@ -316,10 +337,73 @@ public class QuadTapAccessibilityService extends AccessibilityService {
             if (pkg == null) return;
             String name = pkg.toString();
             if (name.equals(getPackageName())) return;
-            if (name.equals(foregroundPackage)) return;
             foregroundPackage = name;
-            applyPanelVisibility();
         } catch (Exception ignored) { }
+    }
+
+    /** 输入法窗口是否已经弹出来。getWindows() 依赖 flagRetrieveInteractiveWindows。 */
+    private boolean isImeVisible() {
+        try {
+            List<AccessibilityWindowInfo> windows = getWindows();
+            for (AccessibilityWindowInfo window : windows) {
+                if (window != null && window.getType() == AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) { }
+        return false;
+    }
+
+    /** 前台应用和输入法状态一起刷新，然后决定面板去留。 */
+    private void refreshWindowState() {
+        refreshForegroundPackage();
+        boolean ime = isImeVisible();
+        if (ime != imeVisible) {
+            imeVisible = ime;
+            if (prefs.hideOnIme()) {
+                TapLog.add("输入法" + (ime ? "弹出 -> 隐藏面板" : "收起 -> 恢复判定"));
+            }
+        }
+        applyPanelVisibility();
+    }
+
+    /** 设置页改动后由 Activity 调过来（同进程静态调用），重建面板并重新判定显示。 */
+    static void notifySettingsChanged() {
+        final QuadTapAccessibilityService service = instance;
+        if (service == null) return;
+        service.handler.post(new Runnable() {
+            @Override public void run() {
+                service.rebuildOverlay();
+                service.refreshWindowState();
+            }
+        });
+    }
+
+    /** 方块大小等外观设置变了：摘掉旧面板按新尺寸重建，位置沿用已保存的坐标。 */
+    private void rebuildOverlay() {
+        if (windowManager == null || prefs == null) return;
+        boolean wasAttached = panelAttached;
+        if (panel != null) {
+            try { windowManager.removeView(panel); } catch (Exception ignored) { }
+            panel = null;
+            panelAttached = false;
+        }
+        createOverlay();
+        if (!wasAttached && panel != null) {
+            // 重建之前本来就是隐藏状态，那就重新摘掉。
+            try { windowManager.removeView(panel); } catch (Exception ignored) { }
+            panelAttached = false;
+        }
+        TapLog.add("按新设置重建面板: 方块 " + prefs.cellSizeDp() + "dp  已显示=" + panelAttached);
+    }
+
+    /** 面板布局完成之前的估算尺寸，用来夹紧位置。 */
+    private int estimatedPanelWidth() {
+        return dp(prefs.cellSizeDp() * 2 + 22);
+    }
+
+    private int estimatedPanelHeight() {
+        return dp(prefs.cellSizeDp() * 2 + 18);
     }
 
     /**
@@ -333,6 +417,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         if (busy) return;   // 正在截屏识别，等 finishOcr 再统一处理
 
         boolean shouldShow = prefs.isPackageAllowed(foregroundPackage);
+        if (shouldShow && prefs.hideOnIme() && imeVisible) shouldShow = false;
         if (shouldShow == panelAttached) return;
 
         if (shouldShow) {
@@ -351,8 +436,15 @@ public class QuadTapAccessibilityService extends AccessibilityService {
             } catch (Exception ignored) { }
             panelAttached = false;
         }
+        if (!shouldShow) {
+            // 摘掉面板时顺手把过期坐标清掉，避免下次拿旧结果去点。
+            targetBounds.clear();
+            targetText.clear();
+        }
         TapLog.add("面板" + (shouldShow ? "显示" : "隐藏")
-                + (prefs.restrictingToApps() ? " (前台=" + foregroundPackage + ")" : " (未限定应用)"));
+                + " (前台=" + foregroundPackage
+                + (imeVisible ? ", 输入法已弹出" : "")
+                + (prefs.restrictingToApps() ? "" : ", 未限定应用") + ")");
     }
 
     private boolean onPanelTouch(MotionEvent event) {
@@ -417,7 +509,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     private void snapToEdge() {
         if (panel == null) return;
         Point size = screenSize();
-        int width = panel.getWidth() > 0 ? panel.getWidth() : dp(120);
+        int width = panel.getWidth() > 0 ? panel.getWidth() : estimatedPanelWidth();
         int center = panelParams.x + width / 2;
         panelParams.x = center < size.x / 2 ? dp(8) : Math.max(0, size.x - width - dp(8));
         try { windowManager.updateViewLayout(panel, panelParams); } catch (Exception ignored) { }
@@ -425,13 +517,13 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
     private int clampX(int x) {
         Point size = screenSize();
-        int width = (panel != null && panel.getWidth() > 0) ? panel.getWidth() : dp(120);
+        int width = (panel != null && panel.getWidth() > 0) ? panel.getWidth() : estimatedPanelWidth();
         return Math.max(0, Math.min(x, Math.max(0, size.x - width)));
     }
 
     private int clampY(int y) {
         Point size = screenSize();
-        int height = (panel != null && panel.getHeight() > 0) ? panel.getHeight() : dp(110);
+        int height = (panel != null && panel.getHeight() > 0) ? panel.getHeight() : estimatedPanelHeight();
         return Math.max(0, Math.min(y, Math.max(0, size.y - height)));
     }
 

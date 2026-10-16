@@ -21,7 +21,14 @@ final class Prefs {
     private static final String K_MANUAL_ONLY = "manual_only";
     private static final String K_LEARNED = "learned_";
     private static final String K_ALLOWED = "allowed_packages";
+    private static final String K_CELL_SIZE = "cell_size_dp";
+    private static final String K_HIDE_ON_IME = "hide_on_ime";
     private static final String[] LABELS = {"A", "B", "C", "D"};
+
+    /** 方块边长（dp）的允许范围与默认值。 */
+    static final int MIN_CELL_SIZE_DP = 34;
+    static final int MAX_CELL_SIZE_DP = 76;
+    static final int DEFAULT_CELL_SIZE_DP = 48;
 
     private final SharedPreferences sp;
 
@@ -113,4 +120,23 @@ final class Prefs {
         if (packageName == null) return true;
         return allowed.contains(packageName);
     }
+
+    // ------------------------------------------------------------ 悬浮面板外观
+
+    /** 单个方块边长（dp）。 */
+    int cellSizeDp() {
+        int value = sp.getInt(K_CELL_SIZE, DEFAULT_CELL_SIZE_DP);
+        if (value < MIN_CELL_SIZE_DP) return MIN_CELL_SIZE_DP;
+        if (value > MAX_CELL_SIZE_DP) return MAX_CELL_SIZE_DP;
+        return value;
+    }
+
+    void setCellSizeDp(int dp) {
+        sp.edit().putInt(K_CELL_SIZE, dp).apply();
+    }
+
+    /** 输入法弹出时是否隐藏面板。 */
+    boolean hideOnIme() { return sp.getBoolean(K_HIDE_ON_IME, true); }
+
+    void setHideOnIme(boolean value) { sp.edit().putBoolean(K_HIDE_ON_IME, value).apply(); }
 }

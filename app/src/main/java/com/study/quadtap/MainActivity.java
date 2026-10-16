@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
@@ -17,6 +18,7 @@ import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -33,14 +35,26 @@ import java.util.Set;
 
 public class MainActivity extends Activity {
 
-    /** 界面上最多显示多少行日志。完整日志仍然可以复制/分享。 */
-    private static final int LOG_TAIL_LINES = 150;
+    /** 日志区最多显示多少行。完整日志仍然可以复制/分享。 */
+    private static final int LOG_TAIL_LINES = 120;
+
+    private static final int COLOR_BG = 0xFFF2F4F8;
+    private static final int COLOR_CARD = 0xFFFFFFFF;
+    private static final int COLOR_STROKE = 0xFFE4E9F2;
+    private static final int COLOR_TITLE = 0xFF16203A;
+    private static final int COLOR_TEXT = 0xFF33405A;
+    private static final int COLOR_HINT = 0xFF7C879C;
+    private static final int COLOR_ACCENT = 0xFF3478F6;
+    private static final int COLOR_OK = 0xFF1F8A4C;
+    private static final int COLOR_WARN = 0xFFB07A16;
+    private static final int COLOR_BAD = 0xFFC0392B;
 
     private Prefs prefs;
     private TextView statusLine;
     private TextView detailLine;
-    private TextView logView;
     private TextView appScopeLine;
+    private TextView sizeLabel;
+    private TextView logView;
 
     private int dp(float value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
@@ -49,86 +63,163 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = new Prefs(this);
-        getWindow().setStatusBarColor(0xFFF7F8FA);
-        getWindow().setNavigationBarColor(0xFFF7F8FA);
+        getWindow().setStatusBarColor(COLOR_BG);
+        getWindow().setNavigationBarColor(COLOR_BG);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(dp(22), dp(28), dp(22), dp(28));
-        page.setBackgroundColor(0xFFF7F8FA);
+        page.setPadding(dp(16), dp(24), dp(16), dp(32));
+        page.setBackgroundColor(COLOR_BG);
 
+        buildHeader(page);
+        buildStatusCard(page);
+        buildFlowCard(page);
+        buildScopeCard(page);
+        buildRecognitionCard(page);
+        buildPanelCard(page);
+        buildLogCard(page);
+        buildAboutCard(page);
+
+        TextView foot = new TextView(this);
+        foot.setText("隐私说明：屏幕内容仅用于本机识别选项位置，不会上传到任何服务器。"
+                + "请仅在你有权操作的应用中使用，并遵守目标应用的规则。");
+        foot.setTextSize(12);
+        foot.setTextColor(COLOR_HINT);
+        foot.setLineSpacing(dp(4), 1f);
+        page.addView(foot, topMargin(22));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(COLOR_BG);
+        scroll.addView(page);
+        setContentView(scroll);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        refreshStatus();
+    }
+
+    // ------------------------------------------------------------------ 各区块
+
+    private void buildHeader(LinearLayout page) {
         TextView title = new TextView(this);
         title.setText("四格自动校准");
-        title.setTextSize(27);
-        title.setTextColor(0xFF172033);
-        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        title.setTextSize(24);
+        title.setTextColor(COLOR_TITLE);
+        title.setTypeface(null, Typeface.BOLD);
         page.addView(title);
 
-        TextView subtitle = new TextView(this);
-        subtitle.setText("把屏幕选项映射到固定的四格悬浮面板。识别优先使用无障碍控件定位，"
-                + "失败时退回本机中文 OCR，也可以长按格子手动校准。\n\n"
-                + "所有识别都在本机完成；不会自动判断答案，只有你主动点击悬浮按钮时才会尝试点击目标选项。");
-        subtitle.setTextSize(15);
-        subtitle.setTextColor(0xFF657086);
-        subtitle.setLineSpacing(dp(4), 1f);
-        page.addView(subtitle, margins(-1, -2, 0, 12));
+        TextView sub = new TextView(this);
+        sub.setText("把屏幕上的选项位置映射到固定的 A/B/C/D 四格悬浮面板。"
+                + "不判断答案，只在你主动点格子时点击对应选项。");
+        sub.setTextSize(13);
+        sub.setTextColor(COLOR_HINT);
+        sub.setLineSpacing(dp(4), 1f);
+        page.addView(sub, topMargin(6));
+    }
 
-        // ---- 状态卡片 ----
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(16), dp(14), dp(16), dp(14));
-        GradientDrawable cardBackground = new GradientDrawable();
-        cardBackground.setColor(Color.WHITE);
-        cardBackground.setCornerRadius(dp(14));
-        cardBackground.setStroke(dp(1), 0xFFE3E8F0);
-        card.setBackground(cardBackground);
-
+    private void buildStatusCard(LinearLayout page) {
+        LinearLayout card = card();
         statusLine = new TextView(this);
-        statusLine.setTextSize(16);
-        statusLine.setTextColor(0xFF172033);
-        statusLine.setTypeface(null, android.graphics.Typeface.BOLD);
+        statusLine.setTextSize(17);
+        statusLine.setTextColor(COLOR_TITLE);
+        statusLine.setTypeface(null, Typeface.BOLD);
         card.addView(statusLine);
 
         detailLine = new TextView(this);
         detailLine.setTextSize(13);
-        detailLine.setTextColor(0xFF657086);
-        detailLine.setLineSpacing(dp(3), 1f);
-        card.addView(detailLine, margins(-1, -2, 0, 6));
-
-        page.addView(card, margins(-1, -2, 18, 0));
-
-        // ---- 使用步骤 ----
-        TextView steps = new TextView(this);
-        steps.setText("使用步骤\n"
-                + "1. 开启无障碍服务，并按系统提示允许相关权限。\n"
-                + "2. 打开题目页面，屏幕边缘会出现 A/B/C/D 四格面板。\n"
-                + "3. 拖动面板可以移到不挡题目的位置，松手后自动吸附到边缘。\n"
-                + "4. 点击 A/B/C/D 尝试点击对应选项；识别成功时会短暂画出识别范围。\n"
-                + "5. 长按某一格进入校准：面板会暂时隐藏，你直接点屏幕上该选项的真实位置即可。\n"
-                + "6. 题目布局变化后会自动重新扫描。");
-        steps.setTextSize(15);
-        steps.setTextColor(0xFF30394A);
-        steps.setLineSpacing(dp(5), 1f);
-        page.addView(steps, margins(-1, -2, 22, 0));
+        detailLine.setTextColor(COLOR_HINT);
+        detailLine.setLineSpacing(dp(4), 1f);
+        card.addView(detailLine, topMargin(6));
 
         Button enable = primaryButton("开启无障碍服务");
-        page.addView(enable, margins(-1, dp(52), 28, 0));
+        card.addView(enable, topMarginSized(14, 46));
         enable.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                try {
-                    startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
-                } catch (Exception e) {
-                    Toast.makeText(MainActivity.this, "无法打开无障碍设置", Toast.LENGTH_SHORT).show();
-                }
-            }
+            @Override public void onClick(View v) { openAccessibilitySettings(); }
         });
 
-        // ---- 开关 ----
-        page.addView(sectionTitle("识别选项"), margins(-1, -2, 26, 0));
+        page.addView(card, topMargin(16));
+    }
+
+    private void buildFlowCard(LinearLayout page) {
+        LinearLayout card = card();
+        card.addView(cardTitle("操作流程"));
+
+        String[][] steps = {
+                {"1", "开启无障碍服务", "系统设置里勾选「四格自动校准」"},
+                {"2", "限定显示的应用", "选定后，面板只在那些应用里出现"},
+                {"3", "打开题目页面", "面板出现在屏幕边缘，可拖动到不挡题的位置"},
+                {"4", "点格子定位", "点 A/B/C/D，识别成功会画出识别范围"},
+                {"5", "长按格子校准", "识别不准时用它：面板隐藏，你直接点真实选项位置"},
+        };
+        for (String[] step : steps) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+
+            TextView index = new TextView(this);
+            index.setText(step[0]);
+            index.setTextSize(12);
+            index.setTextColor(Color.WHITE);
+            index.setGravity(Gravity.CENTER);
+            index.setTypeface(null, Typeface.BOLD);
+            GradientDrawable badge = new GradientDrawable();
+            badge.setColor(COLOR_ACCENT);
+            badge.setShape(GradientDrawable.OVAL);
+            index.setBackground(badge);
+            row.addView(index, new LinearLayout.LayoutParams(dp(22), dp(22)));
+
+            TextView body = new TextView(this);
+            body.setText(step[1] + "\n" + step[2]);
+            body.setTextSize(13);
+            body.setTextColor(COLOR_TEXT);
+            body.setLineSpacing(dp(3), 1f);
+            LinearLayout.LayoutParams bodyParams = new LinearLayout.LayoutParams(0, -2, 1f);
+            bodyParams.leftMargin = dp(10);
+            row.addView(body, bodyParams);
+
+            card.addView(row, topMargin(10));
+        }
+        page.addView(card, topMargin(12));
+    }
+
+    private void buildScopeCard(LinearLayout page) {
+        LinearLayout card = card();
+        card.addView(cardTitle("限定显示的应用"));
+
+        TextView hint = hintText("默认在所有应用上都显示。选定应用后，面板只在那些应用位于前台时出现，"
+                + "切到其它应用会被真正移除（不是变透明），既不遮挡也不会抢触摸。");
+        card.addView(hint, topMargin(6));
+
+        appScopeLine = new TextView(this);
+        appScopeLine.setTextSize(13);
+        appScopeLine.setTextColor(COLOR_TEXT);
+        appScopeLine.setLineSpacing(dp(4), 1f);
+        card.addView(appScopeLine, topMargin(8));
+
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.addView(flexButton("选择应用", new View.OnClickListener() {
+            @Override public void onClick(View v) { showAppPicker(); }
+        }), flexParams(0));
+        buttons.addView(flexButton("取消限定", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                prefs.clearAllowedPackages();
+                applyToService();
+                refreshStatus();
+                Toast.makeText(MainActivity.this, "已取消限定", Toast.LENGTH_SHORT).show();
+            }
+        }), flexParams(dp(8)));
+        card.addView(buttons, topMargin(12));
+
+        page.addView(card, topMargin(12));
+    }
+
+    private void buildRecognitionCard(LinearLayout page) {
+        LinearLayout card = card();
+        card.addView(cardTitle("识别选项"));
 
         Switch ocr = toggle("启用 OCR 回退（Android 11 及以上）", prefs.useOcr());
-        // 截屏 API 只有 Android 11（API 30）起才提供。
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             ocr.setEnabled(false);
             ocr.setChecked(false);
@@ -139,7 +230,7 @@ public class MainActivity extends Activity {
                 prefs.setUseOcr(isChecked);
             }
         });
-        page.addView(ocr, margins(-1, -2, 10, 0));
+        card.addView(ocr, topMargin(8));
 
         Switch marks = toggle("点击后显示识别范围", prefs.showMarks());
         marks.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
@@ -147,7 +238,7 @@ public class MainActivity extends Activity {
                 prefs.setShowMarks(isChecked);
             }
         });
-        page.addView(marks, margins(-1, -2, 6, 0));
+        card.addView(marks, topMargin(2));
 
         Switch manual = toggle("只使用已校准的位置（跳过自动识别）", prefs.manualOnly());
         manual.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
@@ -155,10 +246,10 @@ public class MainActivity extends Activity {
                 prefs.setManualOnly(isChecked);
             }
         });
-        page.addView(manual, margins(-1, -2, 6, 0));
+        card.addView(manual, topMargin(2));
 
         Button clear = secondaryButton("清除全部校准记录");
-        page.addView(clear, margins(-1, dp(48), 18, 0));
+        card.addView(clear, topMarginSized(12, 44));
         clear.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 prefs.clearLearned();
@@ -167,112 +258,142 @@ public class MainActivity extends Activity {
             }
         });
 
-        // ---- 限定显示的应用 ----
-        page.addView(sectionTitle("限定显示的应用"), margins(-1, -2, 26, 0));
+        page.addView(card, topMargin(12));
+    }
 
-        TextView scopeHint = new TextView(this);
-        scopeHint.setText("默认面板在所有应用上都显示。选定应用后，面板只在那些应用位于前台时出现，"
-                + "切到其它应用会被真正移除（不是变透明），既不遮挡也不会抢触摸。");
-        scopeHint.setTextSize(13);
-        scopeHint.setTextColor(0xFF657086);
-        scopeHint.setLineSpacing(dp(3), 1f);
-        page.addView(scopeHint, margins(-1, -2, 8, 0));
+    private void buildPanelCard(LinearLayout page) {
+        LinearLayout card = card();
+        card.addView(cardTitle("悬浮面板"));
 
-        appScopeLine = new TextView(this);
-        appScopeLine.setTextSize(13);
-        appScopeLine.setTextColor(0xFF172033);
-        appScopeLine.setLineSpacing(dp(3), 1f);
-        page.addView(appScopeLine, margins(-1, -2, 6, 0));
+        sizeLabel = new TextView(this);
+        sizeLabel.setTextSize(13);
+        sizeLabel.setTextColor(COLOR_TEXT);
+        card.addView(sizeLabel, topMargin(10));
 
-        Button pickApps = secondaryButton("选择应用");
-        page.addView(pickApps, margins(-1, dp(48), 8, 0));
-        pickApps.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { showAppPicker(); }
-        });
-
-        Button clearApps = secondaryButton("取消限定（所有应用都显示）");
-        page.addView(clearApps, margins(-1, dp(48), 8, 0));
-        clearApps.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                prefs.clearAllowedPackages();
-                refreshStatus();
-                Toast.makeText(MainActivity.this, "已取消限定", Toast.LENGTH_SHORT).show();
+        SeekBar sizeBar = new SeekBar(this);
+        sizeBar.setMax(Prefs.MAX_CELL_SIZE_DP - Prefs.MIN_CELL_SIZE_DP);
+        sizeBar.setProgress(prefs.cellSizeDp() - Prefs.MIN_CELL_SIZE_DP);
+        sizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                updateSizeLabel(Prefs.MIN_CELL_SIZE_DP + progress);
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) { }
+            @Override public void onStopTrackingTouch(SeekBar bar) {
+                // 拖动过程中不重建，松手才写设置并让面板刷新，避免抖动。
+                prefs.setCellSizeDp(Prefs.MIN_CELL_SIZE_DP + bar.getProgress());
+                applyToService();
             }
         });
+        card.addView(sizeBar, topMargin(2));
 
-        TextView foot = new TextView(this);
-        foot.setText("隐私说明：屏幕内容仅用于本机识别选项位置，不会上传。"
-                + "请仅在你有权操作的应用中使用，并遵守目标应用的规则。");
-        foot.setTextSize(12);
-        foot.setTextColor(0xFF8992A3);
-        foot.setLineSpacing(dp(3), 1f);
-        page.addView(foot, margins(-1, -2, 24, 0));
+        TextView sizeHint = hintText("拖动后松手生效，悬浮面板会按新尺寸立即重建，位置保持不变。");
+        card.addView(sizeHint, topMargin(2));
 
-        // ---- 诊断日志 ----
-        page.addView(sectionTitle("诊断日志"), margins(-1, -2, 26, 0));
+        Switch hideIme = toggle("输入法弹出时隐藏面板", prefs.hideOnIme());
+        hideIme.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.setHideOnIme(isChecked);
+                applyToService();
+            }
+        });
+        card.addView(hideIme, topMargin(8));
 
-        TextView logHint = new TextView(this);
-        logHint.setText("自动识别不准时，每次点击悬浮格都会记录当次扫描的完整节点树和判定过程。"
-                + "下面显示最近 " + LOG_TAIL_LINES + " 行，复制或分享发给我就能定位问题。"
-                + "日志只存在本机内存里，退出应用即清空。");
-        logHint.setTextSize(13);
-        logHint.setTextColor(0xFF657086);
-        logHint.setLineSpacing(dp(3), 1f);
-        page.addView(logHint, margins(-1, -2, 8, 0));
+        TextView imeHint = hintText("打字时面板会挡住候选栏，开启后检测到输入法窗口就自动收起。");
+        card.addView(imeHint, topMargin(0));
+
+        page.addView(card, topMargin(12));
+    }
+
+    private void buildLogCard(LinearLayout page) {
+        CollapsibleCard section = new CollapsibleCard("诊断日志", false);
+
+        section.content.addView(hintText("每次点击悬浮格都会记录当次扫描的完整节点树、候选评分和判定过程。"
+                + "识别不准时点「复制」把内容发出来即可定位问题。日志只在内存里，退出应用即清空。"));
 
         logView = new TextView(this);
         logView.setTextSize(9);
         logView.setTextColor(0xFFD5DCE8);
-        logView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        logView.setTypeface(Typeface.MONOSPACE);
         logView.setTextIsSelectable(true);
         logView.setPadding(dp(10), dp(10), dp(10), dp(10));
         GradientDrawable logBackground = new GradientDrawable();
         logBackground.setColor(0xFF1B2130);
         logBackground.setCornerRadius(dp(10));
         logView.setBackground(logBackground);
-        page.addView(logView, margins(-1, -2, 8, 0));
+        section.content.addView(logView, topMargin(10));
 
-        LinearLayout logButtons = new LinearLayout(this);
-        logButtons.setOrientation(LinearLayout.HORIZONTAL);
-        logButtons.addView(logButton("刷新", new View.OnClickListener() {
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.addView(flexButton("刷新", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 refreshStatus();
                 Toast.makeText(MainActivity.this, "已刷新", Toast.LENGTH_SHORT).show();
             }
-        }), logButtonParams(0));
-        logButtons.addView(logButton("复制", new View.OnClickListener() {
+        }), flexParams(0));
+        buttons.addView(flexButton("复制", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 String text = TapLog.dump();
                 if (text.isEmpty()) { Toast.makeText(MainActivity.this, "日志为空", Toast.LENGTH_SHORT).show(); return; }
                 TapLog.copyToClipboard(MainActivity.this, text, "QuadTap 日志");
-                Toast.makeText(MainActivity.this, "已复制 " + TapLog.size() + " 行到剪贴板", Toast.LENGTH_SHORT).show();
+                Toast.makeText(MainActivity.this, "已复制 " + TapLog.size() + " 行", Toast.LENGTH_SHORT).show();
             }
-        }), logButtonParams(dp(8)));
-        logButtons.addView(logButton("分享", new View.OnClickListener() {
+        }), flexParams(dp(8)));
+        buttons.addView(flexButton("分享", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 String text = TapLog.dump();
                 if (text.isEmpty()) { Toast.makeText(MainActivity.this, "日志为空", Toast.LENGTH_SHORT).show(); return; }
                 TapLog.share(MainActivity.this, text);
             }
-        }), logButtonParams(dp(8)));
-        logButtons.addView(logButton("清空", new View.OnClickListener() {
+        }), flexParams(dp(8)));
+        buttons.addView(flexButton("清空", new View.OnClickListener() {
             @Override public void onClick(View v) {
                 TapLog.clear();
                 refreshLog();
                 Toast.makeText(MainActivity.this, "已清空", Toast.LENGTH_SHORT).show();
             }
-        }), logButtonParams(dp(8)));
-        page.addView(logButtons, margins(-1, -2, 10, 0));
+        }), flexParams(dp(8)));
+        section.content.addView(buttons, topMargin(10));
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(page);
-        setContentView(scroll);
+        page.addView(section.root, topMargin(12));
     }
 
-    @Override protected void onResume() {
-        super.onResume();
-        refreshStatus();
+    private void buildAboutCard(LinearLayout page) {
+        CollapsibleCard section = new CollapsibleCard("技术与更新日志", false);
+
+        section.content.addView(subTitle("使用的技术"));
+        section.content.addView(hintText(
+                "· Java / Android SDK，minSdk 26，compileSdk / targetSdk 35\n"
+                + "· AccessibilityService：读取节点树定位选项\n"
+                + "· TYPE_ACCESSIBILITY_OVERLAY 悬浮窗（因此不需要 SYSTEM_ALERT_WINDOW 权限）\n"
+                + "· dispatchGesture 派发手势点击\n"
+                + "· takeScreenshot（API 30+）截屏 + Google ML Kit 中文文字识别作为回退\n"
+                + "· SharedPreferences 保存设置与校准坐标\n"
+                + "· 界面全部用原生 View 以代码构建，没有引入任何第三方 UI 框架\n"
+                + "· 未申请 QUERY_ALL_PACKAGES，只用 <queries> 列出可启动的应用"));
+
+        section.content.addView(subTitle("更新日志"));
+        section.content.addView(hintText(
+                "V1.5\n"
+                + "· 首页改为卡片式布局，操作流程、技术说明、更新日志都写在应用内\n"
+                + "· 诊断日志与关于信息改为可折叠，不再需要长距离滑动\n"
+                + "· 方块大小可在应用内调节（34–76dp），松手即时生效\n"
+                + "· 新增「输入法弹出时隐藏面板」，默认开启\n\n"
+                + "V1.4\n"
+                + "· 新增「限定显示的应用」白名单，切到其它应用会真正移除面板\n\n"
+                + "V1.3\n"
+                + "· 新增位置兜底：选项字母被画成图片时，按几何特征找出一列选项行依次映射 A/B/C/D\n\n"
+                + "V1.2\n"
+                + "· 新增诊断日志\n"
+                + "· 修复 4 选项题目整体失效：顺序检查不再丢弃全部结果\n\n"
+                + "V1.1\n"
+                + "· 修复三处导致功能不可用的问题：缺少 canTakeScreenshot 能力位、"
+                + "截屏 HARDWARE 位图未转 ARGB_8888、选项标签只做全等比较\n"
+                + "· 新增可拖动吸附面板、长按手动校准、定位范围可视化、状态页"));
+
+        page.addView(section.root, topMargin(12));
     }
+
+    // ------------------------------------------------------------------ 状态刷新
 
     private void refreshStatus() {
         refreshLog();
@@ -284,20 +405,20 @@ public class MainActivity extends Activity {
 
         if (connected) {
             statusLine.setText("服务运行中");
-            statusLine.setTextColor(0xFF1F8A4C);
+            statusLine.setTextColor(COLOR_OK);
         } else if (enabled) {
             statusLine.setText("服务已开启，但尚未连接");
-            statusLine.setTextColor(0xFFB07A16);
+            statusLine.setTextColor(COLOR_WARN);
         } else {
             statusLine.setText("服务未开启");
-            statusLine.setTextColor(0xFFC0392B);
+            statusLine.setTextColor(COLOR_BAD);
         }
 
         StringBuilder detail = new StringBuilder();
         detail.append("已校准选项：").append(prefs.learnedCount()).append("/4");
+        detail.append("　·　方块大小：").append(prefs.cellSizeDp()).append("dp");
         if (connected) {
-            int found = service.lastFoundCount();
-            detail.append("\n上次扫描识别到：").append(found).append(" 个选项");
+            detail.append("\n上次扫描识别到：").append(service.lastFoundCount()).append(" 个选项");
         }
         if (!enabled) {
             detail.append("\n请先开启无障碍服务，面板才会出现。");
@@ -313,6 +434,48 @@ public class MainActivity extends Activity {
                         + describeAllowed(allowed));
             }
         }
+        if (sizeLabel != null) updateSizeLabel(prefs.cellSizeDp());
+    }
+
+    private void updateSizeLabel(int value) {
+        if (sizeLabel != null) sizeLabel.setText("方块大小：" + value + " dp");
+    }
+
+    private void refreshLog() {
+        if (logView == null) return;
+        String text = TapLog.tail(LOG_TAIL_LINES);
+        if (text.isEmpty()) {
+            text = "(暂无日志。开启无障碍服务后点击悬浮格，这里就会出现当次扫描记录。)";
+        }
+        logView.setText(text);
+    }
+
+    /** 改完设置通知服务重建面板（同进程静态调用，不需要 IPC）。 */
+    private void applyToService() {
+        QuadTapAccessibilityService.notifySettingsChanged();
+    }
+
+    private void openAccessibilitySettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+        } catch (Exception e) {
+            Toast.makeText(this, "无法打开无障碍设置", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** 从系统设置里确认本服务是否被勾选，即使此刻还没连接也有效。 */
+    private boolean isAccessibilityEnabled() {
+        try {
+            String enabledServices = Settings.Secure.getString(
+                    getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (enabledServices == null) return false;
+            String full = getPackageName() + "/" + QuadTapAccessibilityService.class.getName();
+            String shortForm = getPackageName() + "/.QuadTapAccessibilityService";
+            for (String entry : enabledServices.split(":")) {
+                if (entry.equalsIgnoreCase(full) || entry.equalsIgnoreCase(shortForm)) return true;
+            }
+        } catch (Exception ignored) { }
+        return false;
     }
 
     private String describeAllowed(Set<String> packages) {
@@ -391,6 +554,7 @@ public class MainActivity extends Activity {
                             if (checked[i]) result.add(packages.get(i));
                         }
                         prefs.setAllowedPackages(result);
+                        applyToService();
                         refreshStatus();
                         Toast.makeText(MainActivity.this,
                                 result.isEmpty() ? "未选择应用，恢复为所有应用都显示"
@@ -402,43 +566,93 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    /** 从系统设置里确认本服务是否被勾选，即使此刻还没连接也有效。 */
-    private boolean isAccessibilityEnabled() {
-        try {
-            String enabledServices = Settings.Secure.getString(
-                    getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
-            if (enabledServices == null) return false;
-            String full = getPackageName() + "/" + QuadTapAccessibilityService.class.getName();
-            String shortForm = getPackageName() + "/.QuadTapAccessibilityService";
-            for (String entry : enabledServices.split(":")) {
-                if (entry.equalsIgnoreCase(full) || entry.equalsIgnoreCase(shortForm)) return true;
-            }
-        } catch (Exception ignored) { }
-        return false;
+    // ------------------------------------------------------------------ 视图工具
+
+    /** 可折叠分区：标题行始终可见，内容默认收起。 */
+    private final class CollapsibleCard {
+        final LinearLayout root;
+        final LinearLayout content;
+        private final TextView arrow;
+        private boolean open;
+
+        CollapsibleCard(String title, boolean startOpen) {
+            root = card();
+
+            LinearLayout header = new LinearLayout(MainActivity.this);
+            header.setOrientation(LinearLayout.HORIZONTAL);
+            header.setGravity(Gravity.CENTER_VERTICAL);
+
+            header.addView(cardTitle(title), new LinearLayout.LayoutParams(0, -2, 1f));
+
+            arrow = new TextView(MainActivity.this);
+            arrow.setTextSize(12);
+            arrow.setTextColor(COLOR_HINT);
+            header.addView(arrow);
+
+            header.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { setOpen(!open); }
+            });
+            root.addView(header, new LinearLayout.LayoutParams(-1, -2));
+
+            content = new LinearLayout(MainActivity.this);
+            content.setOrientation(LinearLayout.VERTICAL);
+            root.addView(content, new LinearLayout.LayoutParams(-1, -2));
+
+            setOpen(startOpen);
+        }
+
+        void setOpen(boolean value) {
+            open = value;
+            content.setVisibility(open ? View.VISIBLE : View.GONE);
+            arrow.setText(open ? "收起 ▲" : "展开 ▼");
+        }
     }
 
-    private LinearLayout.LayoutParams margins(int width, int height, int topMarginDp, int bottomMarginDp) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(width, height);
-        params.topMargin = dp(topMarginDp);
-        params.bottomMargin = dp(bottomMarginDp);
-        return params;
+    private LinearLayout card() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(16), dp(14), dp(16), dp(16));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(COLOR_CARD);
+        background.setCornerRadius(dp(16));
+        background.setStroke(dp(1), COLOR_STROKE);
+        layout.setBackground(background);
+        layout.setElevation(dp(1));
+        return layout;
     }
 
-    private TextView sectionTitle(String text) {
+    private TextView cardTitle(String text) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(15);
+        view.setTextColor(COLOR_TITLE);
+        view.setTypeface(null, Typeface.BOLD);
+        return view;
+    }
+
+    private TextView subTitle(String text) {
         TextView view = new TextView(this);
         view.setText(text);
         view.setTextSize(13);
-        view.setTextColor(0xFF8992A3);
-        view.setTypeface(null, android.graphics.Typeface.BOLD);
-        view.setLetterSpacing(0.06f);
+        view.setTextColor(COLOR_TITLE);
+        view.setTypeface(null, Typeface.BOLD);
+        return view;
+    }
+
+    private TextView hintText(String text) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(12);
+        view.setTextColor(COLOR_HINT);
+        view.setLineSpacing(dp(4), 1f);
         return view;
     }
 
     private Switch toggle(String text, boolean checked) {
         Switch view = new Switch(this);
         view.setText(text);
-        view.setTextSize(15);
-        view.setTextColor(0xFF30394A);
+        view.setTextSize(14);
+        view.setTextColor(COLOR_TEXT);
         view.setChecked(checked);
         view.setPadding(0, dp(6), 0, dp(6));
         return view;
@@ -448,9 +662,9 @@ public class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(text);
         button.setAllCaps(false);
-        button.setTextSize(16);
+        button.setTextSize(15);
         button.setTextColor(Color.WHITE);
-        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF3478F6));
+        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(COLOR_ACCENT));
         return button;
     }
 
@@ -458,31 +672,33 @@ public class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(text);
         button.setAllCaps(false);
-        button.setTextSize(15);
-        button.setTextColor(0xFF30394A);
-        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFFE3E8F0));
+        button.setTextSize(14);
+        button.setTextColor(COLOR_TEXT);
+        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFFE7ECF5));
         return button;
     }
 
-    private void refreshLog() {
-        if (logView == null) return;
-        String text = TapLog.tail(LOG_TAIL_LINES);
-        if (text.isEmpty()) {
-            text = "(暂无日志。开启无障碍服务后点击悬浮格，这里就会出现当次扫描记录。)";
-        }
-        logView.setText(text);
+    private Button flexButton(String text, View.OnClickListener listener) {
+        Button button = secondaryButton(text);
+        button.setOnClickListener(listener);
+        return button;
     }
 
-    private LinearLayout.LayoutParams logButtonParams(int startMarginDp) {
+    private LinearLayout.LayoutParams flexParams(int startMarginDp) {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(44), 1f);
         params.leftMargin = startMarginDp;
         return params;
     }
 
-    private Button logButton(String text, View.OnClickListener listener) {
-        Button button = secondaryButton(text);
-        button.setTextSize(14);
-        button.setOnClickListener(listener);
-        return button;
+    private LinearLayout.LayoutParams topMargin(int topMarginDp) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.topMargin = dp(topMarginDp);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams topMarginSized(int topMarginDp, int heightDp) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(heightDp));
+        params.topMargin = dp(topMarginDp);
+        return params;
     }
 }

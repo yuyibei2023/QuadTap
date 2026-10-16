@@ -2,7 +2,7 @@
     android:description="@string/accessibility_description"
     android:summary="@string/accessibility_summary"
     android:settingsActivity="com.study.quadtap.MainActivity"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="250"
     android:canRetrieveWindowContent="true"
