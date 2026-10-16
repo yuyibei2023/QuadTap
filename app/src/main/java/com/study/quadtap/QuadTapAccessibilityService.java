@@ -78,6 +78,10 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     private static final int MAX_LABEL_TEXT = 80;
     /** 前缀匹配时，选项正文的长度上限，用来过滤"A、B、C、D四个选项"这类正文。 */
     private static final int MAX_OPTION_BODY = 40;
+    /** 位置兜底时，一个"选项行"文字的长度上限。 */
+    private static final int MAX_ROW_TEXT = 60;
+    /** 位置兜底时，一个"选项行"至少要有多少高度。 */
+    private static final int MIN_ROW_HEIGHT_DP = 24;
     /** 同一个标签最多保留几个候选参与组合评分。 */
     private static final int MAX_CANDIDATES_PER_LABEL = 3;
 
@@ -553,6 +557,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
         List<String> dump = verbose ? new ArrayList<String>() : null;
         int[] counters = new int[]{0, 0};   // {访问节点数, 带文本节点数}
+        List<Candidate> rows = new ArrayList<>();   // 位置兜底用的"可选行"原料
 
         List<AccessibilityNodeInfo> roots = new ArrayList<>();
         try {
@@ -586,18 +591,24 @@ public class QuadTapAccessibilityService extends AccessibilityService {
             if (verbose) TapLog.add("取窗口失败: " + e);
         }
 
-        for (AccessibilityNodeInfo root : roots) collect(root, 0, false, found, dump, counters);
+        for (AccessibilityNodeInfo root : roots) collect(root, 0, false, found, rows, dump, counters);
         if (verbose) {
             TapLog.add("节点树: 访问 " + counters[0] + " 个节点, 其中 " + counters[1] + " 个带文本");
             if (dump != null) {
                 for (String line : dump) TapLog.add(line);
             }
+            TapLog.add("可选行原料: " + rows.size() + " 个");
+            for (Candidate row : rows) {
+                TapLog.add("  row " + rectToString(row.rect) + " d=" + row.depth
+                        + " txt=\"" + shorten(row.text) + "\"");
+            }
         }
-        pickBest(found, verbose);
+        pickBest(found, rows, verbose);
     }
 
     private void collect(AccessibilityNodeInfo node, int depth, boolean clickableAncestor,
-                         Map<String, List<Candidate>> out, List<String> dump, int[] counters) {
+                         Map<String, List<Candidate>> out, List<Candidate> rows,
+                         List<String> dump, int[] counters) {
         if (node == null || depth > 40) return;
         try {
             // 自己的悬浮窗不属于"屏幕上的选项"，直接跳过整棵子树。
@@ -628,18 +639,27 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                     String normalized = normalize(raw);
                     String key = labelOf(normalized);
                     if (key == null) key = judgeKeyOf(normalized);
-                    if (key != null && !bounds.isEmpty()) {
-                        Rect row = expandToRow(node, bounds);
-                        if (row != null && !row.isEmpty()) {
-                            out.get(key).add(new Candidate(row, raw, clickable, depth));
+                    if (key != null) {
+                        if (!bounds.isEmpty()) {
+                            Rect row = expandToRow(node, bounds);
+                            if (row != null && !row.isEmpty()) {
+                                out.get(key).add(new Candidate(row, raw, clickable, depth));
+                            }
                         }
+                    } else if (clickable && !bounds.isEmpty()
+                            && raw.length() <= MAX_ROW_TEXT
+                            && bounds.height() >= dp(MIN_ROW_HEIGHT_DP)) {
+                        // 位置兜底的原料：可点击（或位于可点击容器内）且有文字的节点。
+                        // 驾考宝典这类应用把 A/B/C/D 画成图片，文字里只有选项正文，
+                        // 只能靠"一列等宽等距的行"这个几何特征把它们找出来。
+                        rows.add(new Candidate(new Rect(bounds), raw, true, depth));
                     }
                 }
             }
 
             int childCount = node.getChildCount();
             for (int i = 0; i < childCount; i++) {
-                collect(node.getChild(i), depth + 1, clickable, out, dump, counters);
+                collect(node.getChild(i), depth + 1, clickable, out, rows, dump, counters);
             }
         } catch (Exception ignored) {
             // 节点可能在遍历过程中失效，跳过即可。
@@ -710,7 +730,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         return fallback;
     }
 
-    private void pickBest(Map<String, List<Candidate>> found, boolean verbose) {
+    private void pickBest(Map<String, List<Candidate>> found, List<Candidate> rows, boolean verbose) {
         Point size = screenSize();
         if (verbose) TapLog.add("--- 标签候选与评分 ---");
 
@@ -748,6 +768,25 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 targetBounds.put("B", no.rect);
                 targetText.put("B", no.text);
                 if (verbose) TapLog.add("判断题兜底生效: 正确->A 错误->B");
+            }
+        }
+
+        // 位置兜底：字母一个都没匹配上时启用。
+        // 驾考宝典把 A/B/C/D 渲染成图片，文字节点里只有选项正文（如"左侧通行"），
+        // 任何要求字母的正则都不可能命中，只能靠几何特征把这一列选项行找出来。
+        if (targetBounds.size() < 2) {
+            List<Candidate> column = findPositionalColumn(rows, size, verbose);
+            if (column != null && column.size() >= 2) {
+                targetBounds.clear();
+                targetText.clear();
+                StringBuilder detail = new StringBuilder();
+                for (int i = 0; i < column.size() && i < LABELS.length; i++) {
+                    Candidate candidate = column.get(i);
+                    targetBounds.put(LABELS[i], candidate.rect);
+                    targetText.put(LABELS[i], candidate.text);
+                    detail.append(LABELS[i]).append("=\"").append(shorten(candidate.text)).append("\" ");
+                }
+                if (verbose) TapLog.add("位置兜底生效(" + column.size() + " 行): " + detail);
             }
         }
 
@@ -816,6 +855,118 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         if (rect == null) return "null";
         return "[" + rect.left + "," + rect.top + "][" + rect.right + "," + rect.bottom + "]"
                 + " " + rect.width() + "x" + rect.height();
+    }
+
+    /**
+     * 按几何位置找出一列选项行。
+     *
+     * 适用场景：题库把 A/B/C/D 画成图片，无障碍树里的文字节点只有选项正文。
+     * 这时选项行仍然有很稳定的几何特征 —— 左右边界相同、纵向等距、高度接近。
+     * 按 (left, right) 在容差内聚类，再对每一簇的"等距程度 / 高度一致性 / 屏幕位置"打分，
+     * 取最像选项列的那一簇，按从上到下依次对应 A、B、C、D。
+     */
+    private List<Candidate> findPositionalColumn(List<Candidate> rows, Point size, boolean verbose) {
+        if (rows == null || rows.size() < 2) {
+            if (verbose) TapLog.add("位置兜底: 可选行不足 2 个, 跳过");
+            return null;
+        }
+
+        int tolerance = Math.max(dp(12), (int) (size.x * 0.03f));
+
+        List<List<Candidate>> clusters = new ArrayList<>();
+        for (Candidate candidate : rows) {
+            List<Candidate> target = null;
+            for (List<Candidate> cluster : clusters) {
+                Rect anchor = cluster.get(0).rect;
+                if (Math.abs(anchor.left - candidate.rect.left) <= tolerance
+                        && Math.abs(anchor.right - candidate.rect.right) <= tolerance) {
+                    target = cluster;
+                    break;
+                }
+            }
+            if (target == null) {
+                target = new ArrayList<>();
+                clusters.add(target);
+            }
+            target.add(candidate);
+        }
+
+        List<Candidate> best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (List<Candidate> cluster : clusters) {
+            if (cluster.size() < 2 || cluster.size() > LABELS.length) continue;
+            Collections.sort(cluster, new Comparator<Candidate>() {
+                @Override public int compare(Candidate a, Candidate b) {
+                    return Integer.compare(a.rect.top, b.rect.top);
+                }
+            });
+            double score = scoreColumn(cluster, size);
+            if (verbose) {
+                TapLog.add("  簇 " + cluster.size() + " 行 left=" + cluster.get(0).rect.left
+                        + " right=" + cluster.get(0).rect.right
+                        + " score=" + (int) score
+                        + " 首行=\"" + shorten(cluster.get(0).text) + "\"");
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                best = cluster;
+            }
+        }
+
+        if (best == null && verbose) TapLog.add("位置兜底: 没有任何簇符合 2.." + LABELS.length + " 行");
+        return best;
+    }
+
+    /** 给一列候选行打分：越像"一列等宽等距的选项"分越高。 */
+    private double scoreColumn(List<Candidate> column, Point size) {
+        double score = 0;
+
+        // 4 行是最常见的单选题，2 行是判断题。
+        if (column.size() == 4) score += 120;
+        else if (column.size() == 2) score += 60;
+        else score += 20;
+
+        // 竖直间距应当均匀。
+        double spacingSum = 0;
+        for (int i = 1; i < column.size(); i++) {
+            spacingSum += column.get(i).rect.top - column.get(i - 1).rect.top;
+        }
+        double spacingMean = spacingSum / (column.size() - 1);
+        double spacingDeviation = 0;
+        for (int i = 1; i < column.size(); i++) {
+            spacingDeviation += Math.abs(
+                    (column.get(i).rect.top - column.get(i - 1).rect.top) - spacingMean);
+        }
+        spacingDeviation /= (column.size() - 1);
+        score += 80 * (1 - Math.min(1, spacingDeviation / Math.max(1, spacingMean)));
+
+        // 高度应当接近。
+        double heightSum = 0;
+        for (Candidate candidate : column) heightSum += candidate.rect.height();
+        double heightMean = heightSum / column.size();
+        double heightDeviation = 0;
+        for (Candidate candidate : column) {
+            heightDeviation += Math.abs(candidate.rect.height() - heightMean);
+        }
+        heightDeviation /= column.size();
+        score += 60 * (1 - Math.min(1, heightDeviation / Math.max(1, heightMean)));
+
+        // 选项通常在屏幕中部偏下。
+        double centerY = column.get(column.size() / 2).rect.centerY();
+        score += 40.0 * centerY / Math.max(1, size.y);
+
+        // 太窄的多半是标签而不是整行选项。
+        if (column.get(0).rect.width() < size.x * 0.3f) score -= 40;
+
+        // 行与行之间不该有巨大空隙（说明中间夹了无关内容）。
+        double gapLimit = size.y * 0.25f;
+        for (int i = 1; i < column.size(); i++) {
+            if (column.get(i).rect.top - column.get(i - 1).rect.bottom > gapLimit) {
+                score -= 60;
+                break;
+            }
+        }
+        return score;
     }
 
     // ---------------------------------------------------------------- OCR 回退
