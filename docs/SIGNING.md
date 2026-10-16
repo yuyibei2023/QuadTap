@@ -24,24 +24,33 @@ Android 要求每个 APK 都带数字签名。现在构建出来的是 **debug �
 # 建议放在仓库外面，避免被误提交
 mkdir D:\keys
 
+# 推荐：生成一个 24 位随机口令（ASCII 字母数字，约 2^143 种组合）
+$pw = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
+
 & "D:\Program Files\CGTech\Vericut 9.6\windows64\jre\bin\keytool.exe" `
   -genkeypair -v `
   -keystore D:\keys\quadtap-release.jks `
   -storetype PKCS12 `
   -keyalg RSA -keysize 2048 -validity 10000 `
   -alias quadtap `
-  -storepass QuadTap-2026-Key `
+  -storepass $pw `
   -dname "CN=QuadTap, O=Personal, C=CN"
+
+Write-Host "你的口令（务必立刻记下来，关掉窗口就没了）：$pw" -ForegroundColor Yellow
 ```
 
-上面这条命令可以直接运行，口令就是 `QuadTap-2026-Key`。
-想换成自己的口令，**只改 `-storepass` 后面那一处**，并记住它（第 3 步要用两次）。
+用变量传口令的好处：**口令本身不会出现在命令历史里**，而且不用手打两遍。
 
 口令的硬性要求：
 
 - **必须是 ASCII**。用中文或 emoji 会报
   `UnrecoverableKeyException: Encrypt Private Key failed: Password is not ASCII`
-- 避免 `"` `'` `$` `\` 这类需要在命令行转义的字符，字母数字加连字符最省事
+- **不要用手机号、生日、身份证号这类信息**。密钥是这个应用的永久身份，
+  口令必须是别人猜不到的随机串
+- 避免 `"` `'` `$` `\` 这类需要在命令行转义的字符，字母数字最省事
+
+> 如果你想手输口令，把 `-storepass $pw` 换成 `-storepass 你的口令` 即可，
+> 但请确认它是纯 ASCII 且足够随机。
 
 **不要加 `-keypass`**：PKCS12 不支持两套密码，加了也只会被忽略（见下方提示），不加则自动使用 `-storepass` 的值。
 
@@ -78,9 +87,9 @@ Get-Content D:\keys\keystore.b64 | Set-Clipboard
 | Name | Value |
 |---|---|
 | `QUADTAP_KEYSTORE_BASE64` | `D:\keys\keystore.b64` 的全部内容（一整行） |
-| `QUADTAP_KEYSTORE_PASSWORD` | 第 1 步设的口令 |
+| `QUADTAP_KEYSTORE_PASSWORD` | 第 1 步生成的那个随机口令 |
 | `QUADTAP_KEY_ALIAS` | `quadtap` |
-| `QUADTAP_KEY_PASSWORD` | **和第 1 步同一个口令**（PKCS12 不允许不同） |
+| `QUADTAP_KEY_PASSWORD` | **和第 1 步完全相同的口令**（PKCS12 不允许不同） |
 
 四个必须全部填。**少填任何一个，发布会直接失败并明确告诉你缺哪个**（而不是悄悄产出 debug 包）。
 
@@ -133,9 +142,9 @@ CI 从环境变量读这四个值，本地也可以照做：
 
 ```powershell
 $env:QUADTAP_KEYSTORE_FILE     = "D:\keys\quadtap-release.jks"
-$env:QUADTAP_KEYSTORE_PASSWORD = "QuadTap-2026-Key"
+$env:QUADTAP_KEYSTORE_PASSWORD = "<第 1 步生成的口令>"
 $env:QUADTAP_KEY_ALIAS         = "quadtap"
-$env:QUADTAP_KEY_PASSWORD      = "QuadTap-2026-Key"
+$env:QUADTAP_KEY_PASSWORD      = "<同一个口令>"
 gradle assembleRelease
 ```
 
