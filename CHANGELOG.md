@@ -7,6 +7,27 @@
 
 ---
 
+## [1.6] - 2026-10-16
+
+概述：应用功能没有变化。本次发布的是构建与发布流程的改进：接入正式签名。
+
+### 改进优化
+
+- 接入正式签名：从 GitHub Secrets 还原密钥，改用 `assembleRelease` 构建并对 APK 签名；
+  未配置密钥时自动回退 debug 签名，不会弄坏原有构建
+- 发布流程新增 `apksigner verify --print-certs` 校验，日志里会打印签名证书
+- 发布说明自动追加 `docs/screenshots/` 下的界面截图（放图后即生效）
+- 改用运行器预装的 Android SDK，不再依赖 `setup-android` 下载命令行工具，少一个网络环节
+- 修复：`action-gh-release` 在 Release 已存在时不会刷新说明文字（只更新产物），
+  改用 `gh release edit` 强制同步，重复打同一标签也能拿到最新说明
+
+### 警告
+
+**签名密钥一旦更换，已安装的用户必须先卸载才能升级。**
+请务必保管好 `quadtap-release.jks` 及其口令，详见 [`docs/SIGNING.md`](docs/SIGNING.md)。
+
+---
+
 ## [1.5] - 2026-10-16
 
 概述：首页改版为卡片式布局，诊断日志可折叠，方块大小和输入法隐藏都能在应用内调整。
