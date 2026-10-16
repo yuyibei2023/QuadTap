@@ -979,15 +979,6 @@ public class MainActivity extends Activity {
         return view;
     }
 
-    private TextView subTitle(String text) {
-        TextView view = new TextView(this);
-        view.setText(text);
-        view.setTextSize(13);
-        view.setTextColor(COLOR_TITLE);
-        view.setTypeface(null, Typeface.BOLD);
-        return view;
-    }
-
     private TextView hintText(String text) {
         TextView view = new TextView(this);
         view.setText(text);
