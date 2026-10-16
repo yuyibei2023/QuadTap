@@ -30,21 +30,31 @@ mkdir D:\keys
   -storetype PKCS12 `
   -keyalg RSA -keysize 2048 -validity 10000 `
   -alias quadtap `
-  -storepass 你的口令 `
+  -storepass QuadTap-2026-Key `
   -dname "CN=QuadTap, O=Personal, C=CN"
 ```
 
-把 `你的口令` 换成一个你自己设的强口令。其余参数照抄。
+上面这条命令可以直接运行，口令就是 `QuadTap-2026-Key`。
+想换成自己的口令，**只改 `-storepass` 后面那一处**，并记住它（第 3 步要用两次）。
+
+口令的硬性要求：
+
+- **必须是 ASCII**。用中文或 emoji 会报
+  `UnrecoverableKeyException: Encrypt Private Key failed: Password is not ASCII`
+- 避免 `"` `'` `$` `\` 这类需要在命令行转义的字符，字母数字加连字符最省事
+
+**不要加 `-keypass`**：PKCS12 不支持两套密码，加了也只会被忽略（见下方提示），不加则自动使用 `-storepass` 的值。
 
 如果你以后装了 JDK，把 `keytool.exe` 的路径换成 `keytool` 即可，命令完全一样。
 
-**`-storetype PKCS12` 和 `-alias quadtap` 不要改**：前者对应下文的密码规则，后者是密钥别名。
+`-storetype PKCS12` 和 `-alias quadtap` 不要改：前者决定密码规则，后者是密钥别名。
 
-> 实测提示：PKCS12 格式**不支持两套不同的密码**。如果你另外传 `-keypass`，keytool 会提示
+> 实测提示：PKCS12 格式**不支持两套不同的密码**。如果另外传 `-keypass`，keytool 会提示
 > `Different store and key passwords not supported for PKCS12 KeyStores. Ignoring user-specified -keypass value.`
-> 并忽略它。**所以仓库口令和密钥口令必须填同一个值**（见第 3 步）。
+> 并忽略它。**所以仓库口令和密钥口令必须是同一个值**（见第 3 步）。
 
 生成后会得到 `D:\keys\quadtap-release.jks`，大约 2–3 KB。
+这个文件就是你的密钥库，里面装着一对密钥（私钥 + 自签名证书），`quadtap` 是它们在库里的别名。
 
 ## 第 2 步：转成 base64
 
@@ -123,9 +133,9 @@ CI 从环境变量读这四个值，本地也可以照做：
 
 ```powershell
 $env:QUADTAP_KEYSTORE_FILE     = "D:\keys\quadtap-release.jks"
-$env:QUADTAP_KEYSTORE_PASSWORD = "你的口令"
+$env:QUADTAP_KEYSTORE_PASSWORD = "QuadTap-2026-Key"
 $env:QUADTAP_KEY_ALIAS         = "quadtap"
-$env:QUADTAP_KEY_PASSWORD      = "你的口令"
+$env:QUADTAP_KEY_PASSWORD      = "QuadTap-2026-Key"
 gradle assembleRelease
 ```
 
