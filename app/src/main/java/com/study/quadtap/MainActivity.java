@@ -19,6 +19,7 @@ import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
@@ -74,6 +75,12 @@ public class MainActivity extends Activity {
     private int COLOR_BTN_PRESSED;
     private int COLOR_LOG_BG;
     private int COLOR_LOG_TEXT;
+    // 导航栏配色单独一套：它不属于任何一张彩色卡片，
+    // 不能复用 useCardStyle() 切换过的 COLOR_TEXT（否则浅色主题下会出现浅字浅底）。
+    private int COLOR_NAV_TEXT;
+    private int COLOR_NAV_SELECTED_TEXT;
+    private int COLOR_NAV_SELECTED_BG;
+    private int COLOR_NAV_RAIL_BG;
 
     private boolean darkTheme = false;
 
@@ -95,13 +102,18 @@ public class MainActivity extends Activity {
             COLOR_BTN_PRESSED = 0xFF3C4856;
             COLOR_LOG_BG = 0xFF0A0E14;
             COLOR_LOG_TEXT = 0xFFBAC4D4;
+            COLOR_NAV_TEXT = 0xFFC4CDDB;
+            COLOR_NAV_SELECTED_TEXT = 0xFFFFFFFF;
+            COLOR_NAV_SELECTED_BG = 0xFF1677FF;
+            COLOR_NAV_RAIL_BG = 0xFF0B1016;
         } else {
             COLOR_BG = 0xFFF2F4F8;
             COLOR_CARD = 0xFFFFFFFF;
             COLOR_STROKE = 0xFFE4E9F2;
             COLOR_TITLE = 0xFF16203A;
             COLOR_TEXT = 0xFF33405A;
-            COLOR_HINT = 0xFF7C879C;
+            // 原来是 0xFF7C879C，对白底只有约 3.5:1，提到 4.5:1 以上
+            COLOR_HINT = 0xFF5D6A80;
             COLOR_ACCENT = 0xFF3478F6;
             COLOR_ACCENT_PRESSED = 0xFF255FC9;
             COLOR_OK = 0xFF1F8A4C;
@@ -111,6 +123,10 @@ public class MainActivity extends Activity {
             COLOR_BTN_PRESSED = 0xFFD3DCEA;
             COLOR_LOG_BG = 0xFF1B2130;
             COLOR_LOG_TEXT = 0xFFD5DCE8;
+            COLOR_NAV_TEXT = 0xFF33405A;
+            COLOR_NAV_SELECTED_TEXT = 0xFFFFFFFF;
+            COLOR_NAV_SELECTED_BG = 0xFF1677FF;
+            COLOR_NAV_RAIL_BG = 0xFFE8EDF6;
         }
     }
 
@@ -157,7 +173,53 @@ public class MainActivity extends Activity {
     private final Runnable tickRunnable = new Runnable() {
         @Override public void run() {
             updateRunTime();
+            // 只有正在看日志页时才刷新终端内容，避免其他页面白做功。
+            // 刷新是「内容没变就不 setText」，不会打扰用户的滚动位置。
+            if (currentPage == PAGE_LOG) refreshLog();
             tickHandler.postDelayed(this, 1000);
+        }
+    };
+
+    // ---- 自适应布局：断点全部基于「当前可用窗口宽度 dp」，不看设备型号 ----
+    private static final int MODE_NARROW = 0;   // < 600dp
+    private static final int MODE_MEDIUM = 1;   // 600 ~ 839dp
+    private static final int MODE_WIDE = 2;     // >= 840dp
+    private static final int BREAKPOINT_MEDIUM_DP = 600;
+    private static final int BREAKPOINT_WIDE_DP = 840;
+    /** 中等/宽屏下正文的最大宽度，避免长行难读。 */
+    private static final int CONTENT_MAX_WIDTH_MEDIUM_DP = 720;
+    private static final int CONTENT_MAX_WIDTH_WIDE_DP = 1040;
+    /** 侧边导航栏宽度：只用于导航，保持紧凑。 */
+    private static final int RAIL_WIDTH_DP = 196;
+
+    // ---- 四个功能页（统一导航状态，手势与点击共用同一个 index）----
+    private static final int PAGE_RUN = 0;
+    private static final int PAGE_RECOGNIZE = 1;
+    private static final int PAGE_LOG = 2;
+    private static final int PAGE_SETTINGS = 3;
+    private static final int PAGE_COUNT = 4;
+    private static final String[] PAGE_TITLES = {"首页状态", "识别与校准", "运行日志", "应用设置"};
+    private static final String STATE_PAGE = "quadtap_page";
+    private static final String STATE_LOG_SCROLL = "quadtap_log_scroll";
+
+    private int layoutMode = MODE_NARROW;
+    private int currentPage = PAGE_RUN;
+    private CardPager pager;
+    private LinearLayout navTop;
+    private LinearLayout navRail;
+    private final TextView[] navItems = new TextView[PAGE_COUNT];
+    private View rootView;
+
+    // ---- 黑色终端式日志窗口 ----
+    private ScrollView logScroll;
+    /** 是否自动跟随最新日志；用户向上翻阅历史时置为 false。 */
+    private boolean logFollow = true;
+    /** 旋屏后用 Bundle 带回来的日志滚动位置，等日志页可见时再恢复。 */
+    private int pendingLogScroll = -1;
+
+    private final Runnable scrollLogToBottom = new Runnable() {
+        @Override public void run() {
+            if (logScroll != null) logScroll.fullScroll(View.FOCUS_DOWN);
         }
     };
 
@@ -208,6 +270,16 @@ public class MainActivity extends Activity {
         prefs = new Prefs(this);
         applyPalette(resolveDark());
 
+        // 旋屏 / 分屏导致 Activity 重建时，把当前选中页和日志滚动位置接回来。
+        // 业务状态不在这里：运行开关与计时在无障碍服务里，设置与校准在 Prefs 里，
+        // 日志内容在 TapLog 的静态环形缓冲里 —— 所以重建不会丢业务状态，
+        // 也不会重新启动自动答题或 OCR。
+        if (state != null) {
+            currentPage = state.getInt(STATE_PAGE, PAGE_RUN);
+            pendingLogScroll = state.getInt(STATE_LOG_SCROLL, -1);
+        }
+        if (currentPage < 0 || currentPage >= PAGE_COUNT) currentPage = PAGE_RUN;
+
         // targetSdk 35 起系统强制「边到边」：应用会被绘制到状态栏和导航栏下面，
         // setStatusBarColor 之类已经失效。所以必须自己把系统栏高度让出来，
         // 否则顶部标题会被状态栏压住（这正是之前的问题）。
@@ -219,30 +291,258 @@ public class MainActivity extends Activity {
         controller.setAppearanceLightStatusBars(!darkTheme);
         controller.setAppearanceLightNavigationBars(!darkTheme);
 
+        buildShell();
+        applyWindowInsets(rootView);
+        refreshStatus();
+        // 重建时就停在日志页：把上次的滚动位置接回来（首次启动时 pendingLogScroll 为 -1）
+        if (currentPage == PAGE_LOG) restorePendingLogScroll();
+    }
+
+    @Override protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putInt(STATE_PAGE, currentPage);
+        if (logScroll != null) outState.putInt(STATE_LOG_SCROLL, logScroll.getScrollY());
+    }
+
+    // ------------------------------------------------------------------ 自适应布局骨架
+
+    /**
+     * 按当前可用宽度搭出整页骨架。只在 onCreate 调用一次：
+     * 宽度变化（旋屏、分屏、改窗口大小）会触发 Activity 重建，重建后重新选布局，
+     * 所以这里不需要、也不应该重复注册任何监听器。
+     */
+    private void buildShell() {
+        layoutMode = resolveLayoutMode();
+
         LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
+        root.setOrientation(layoutMode == MODE_WIDE ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
         root.setBackgroundColor(COLOR_BG);
 
-        // 单页纵向滚动 + 卡片堆叠。没有选项卡、没有滑动切换、没有拖动排序。
+        // 四张卡片各自成页，放进 StandBy 式切换容器
+        pager = new CardPager(this);
+        for (int i = 0; i < PAGE_COUNT; i++) {
+            pager.addView(buildPage(i), new ViewGroup.LayoutParams(-1, -1));
+        }
+        pager.setOnPageSettledListener(new CardPager.OnPageSettledListener() {
+            @Override public void onPageSettled(int index) {
+                currentPage = index;
+                updateNavSelection();
+                onPageVisible(index);
+            }
+        });
+        pager.setCurrentItemImmediate(currentPage);
+
+        LinearLayout contentColumn = new LinearLayout(this);
+        contentColumn.setOrientation(LinearLayout.VERTICAL);
+        contentColumn.addView(pager, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        if (layoutMode == MODE_WIDE) {
+            // 宽屏：左侧紧凑导航栏 + 右侧内容区
+            navRail = buildNavRail();
+            root.addView(navRail, new LinearLayout.LayoutParams(dp(RAIL_WIDTH_DP), -1));
+            root.addView(contentColumn, new LinearLayout.LayoutParams(0, -1, 1f));
+        } else {
+            // 窄屏 / 中等宽度：顶部一行导航入口，内容仍是一张卡片
+            navTop = buildNavTop();
+            root.addView(navTop, new LinearLayout.LayoutParams(-1, -2));
+            root.addView(contentColumn, new LinearLayout.LayoutParams(-1, 0, 1f));
+        }
+
+        rootView = root;
+        setContentView(root);
+        updateNavSelection();
+    }
+
+    /** 单页内容：一个纵向 ScrollView，里面按当前断点限制宽度并居中。 */
+    private View buildPage(int index) {
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(COLOR_BG);
         scroll.setFillViewport(true);
+        scroll.setClipToPadding(false);
 
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(dp(20), dp(18), dp(20), dp(36));
-        scroll.addView(page);
+        FrameLayout holder = new FrameLayout(this);
+        holder.setBackgroundColor(COLOR_BG);
 
-        buildRunCard(page);          // 卡片 1：运行控制（核心）
-        buildRecognitionArea(page);  // 卡片 2：识别与校准
-        buildLogArea(page);          // 卡片 3：运行日志
-        buildSettingsArea(page);     // 卡片 4：应用设置
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int pad = pagePaddingDp();
+        content.setPadding(dp(pad), dp(18), dp(pad), dp(36));
 
-        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        FrameLayout.LayoutParams contentParams = new FrameLayout.LayoutParams(
+                contentWidthPx(), FrameLayout.LayoutParams.WRAP_CONTENT);
+        contentParams.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        holder.addView(content, contentParams);
 
-        setContentView(root);
-        applyWindowInsets(root);
-        refreshStatus();
+        scroll.addView(holder, new ScrollView.LayoutParams(-1, -1));
+
+        // 四个原有构建方法一行没改，只是从「同一页纵向堆叠」改成「各自一页」
+        if (index == PAGE_RUN) buildRunCard(content);
+        else if (index == PAGE_RECOGNIZE) buildRecognitionArea(content);
+        else if (index == PAGE_LOG) buildLogArea(content);
+        else buildSettingsArea(content);
+
+        return scroll;
+    }
+
+    /** 顶部导航（窄屏 / 中等宽度用）：一行四个入口，同时支持点击切换。 */
+    private LinearLayout buildNavTop() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setBackgroundColor(COLOR_BG);
+        row.setPadding(dp(12), dp(10), dp(12), dp(8));
+
+        for (int i = 0; i < PAGE_COUNT; i++) {
+            final int index = i;
+            TextView item = new TextView(this);
+            item.setText(PAGE_TITLES[i]);
+            item.setTextSize(13);
+            item.setGravity(Gravity.CENTER);
+            item.setMinHeight(dp(48));
+            item.setPadding(dp(4), dp(12), dp(4), dp(12));
+            item.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { selectPage(index, true); }
+            });
+            navItems[i] = item;
+
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -2, 1f);
+            if (i > 0) params.leftMargin = dp(8);
+            row.addView(item, params);
+        }
+        return row;
+    }
+
+    /** 侧边导航（宽屏用）：只放导航入口，不塞业务控件。 */
+    private LinearLayout buildNavRail() {
+        LinearLayout rail = new LinearLayout(this);
+        rail.setOrientation(LinearLayout.VERTICAL);
+        rail.setBackgroundColor(COLOR_NAV_RAIL_BG);
+        rail.setPadding(dp(14), dp(20), dp(14), dp(20));
+
+        TextView brand = new TextView(this);
+        brand.setText("QuadTap");
+        brand.setTextSize(18);
+        brand.setTypeface(null, Typeface.BOLD);
+        brand.setTextColor(darkTheme ? 0xFFE9EEF7 : 0xFF16203A);
+        rail.addView(brand);
+
+        TextView sub = new TextView(this);
+        sub.setText("四格映射");
+        sub.setTextSize(12);
+        sub.setTextColor(darkTheme ? 0xFF8994A7 : 0xFF5D6A80);
+        rail.addView(sub, topMargin(2));
+
+        for (int i = 0; i < PAGE_COUNT; i++) {
+            final int index = i;
+            TextView item = new TextView(this);
+            item.setText(PAGE_TITLES[i]);
+            item.setTextSize(14);
+            item.setGravity(Gravity.CENTER_VERTICAL);
+            item.setMinHeight(dp(48));
+            item.setPadding(dp(14), dp(12), dp(14), dp(12));
+            item.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { selectPage(index, true); }
+            });
+            navItems[i] = item;
+
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+            params.topMargin = dp(i == 0 ? 20 : 8);
+            rail.addView(item, params);
+        }
+        return rail;
+    }
+
+    /** 唯一的页面切换入口：手势（由 CardPager 回调）和导航点击都走这里。 */
+    private void selectPage(int index, boolean animate) {
+        if (index < 0 || index >= PAGE_COUNT) return;
+        if (pager == null) return;
+        if (index == currentPage) return;
+        // 切换动画进行中就别再改状态：否则导航高亮了新页、画面还停在旧页
+        if (pager.isAnimating()) return;
+        currentPage = index;          // 统一导航状态先落地
+        updateNavSelection();
+        pager.setCurrentItem(index, animate);
+        onPageVisible(index);
+    }
+
+    private void updateNavSelection() {
+        for (int i = 0; i < PAGE_COUNT; i++) {
+            TextView item = navItems[i];
+            if (item == null) continue;
+            boolean selected = i == currentPage;
+
+            GradientDrawable background = new GradientDrawable();
+            background.setCornerRadius(dp(12));
+            background.setColor(selected ? COLOR_NAV_SELECTED_BG : Color.TRANSPARENT);
+            item.setBackground(background);
+            item.setTextColor(selected ? COLOR_NAV_SELECTED_TEXT : COLOR_NAV_TEXT);
+            item.setTypeface(null, selected ? Typeface.BOLD : Typeface.NORMAL);
+            item.setContentDescription((selected ? "当前页：" : "") + PAGE_TITLES[i]);
+        }
+    }
+
+    /** 切到某一页之后的刷新。只读现有数据源，不触发任何业务动作。 */
+    private void onPageVisible(int index) {
+        if (index == PAGE_LOG) {
+            refreshLog();
+            restorePendingLogScroll();
+        }
+    }
+
+    /** 重建后把日志滚回原来的位置，而不是跳到底部。 */
+    private void restorePendingLogScroll() {
+        if (pendingLogScroll < 0 || logScroll == null) return;
+        final int target = pendingLogScroll;
+        pendingLogScroll = -1;
+        logFollow = false;
+        logScroll.post(new Runnable() {
+            @Override public void run() { logScroll.scrollTo(0, target); }
+        });
+    }
+
+    /** 布局断点：只依据当前可用窗口宽度，不看设备型号。 */
+    private int resolveLayoutMode() {
+        int width = availableWidthDp();
+        if (width >= BREAKPOINT_WIDE_DP) return MODE_WIDE;
+        if (width >= BREAKPOINT_MEDIUM_DP) return MODE_MEDIUM;
+        return MODE_NARROW;
+    }
+
+    /**
+     * 当前可用宽度（dp）。分屏 / 自由窗口下 screenWidthDp 就是缩小后的窗口宽度，
+     * 因此平板分屏也会正确地落到窄屏布局。
+     */
+    private int availableWidthDp() {
+        Configuration configuration = getResources().getConfiguration();
+        int width = configuration.screenWidthDp;
+        if (width > 0) return width;
+        float density = getResources().getDisplayMetrics().density;
+        if (density <= 0f) density = 1f;
+        return (int) (getResources().getDisplayMetrics().widthPixels / density);
+    }
+
+    private int availableHeightDp() {
+        Configuration configuration = getResources().getConfiguration();
+        int height = configuration.screenHeightDp;
+        if (height > 0) return height;
+        float density = getResources().getDisplayMetrics().density;
+        if (density <= 0f) density = 1f;
+        return (int) (getResources().getDisplayMetrics().heightPixels / density);
+    }
+
+    private int pagePaddingDp() {
+        if (layoutMode == MODE_WIDE) return 28;
+        if (layoutMode == MODE_MEDIUM) return 22;
+        return 16;
+    }
+
+    /** 内容列宽度：窄屏铺满，中等/宽屏限制最大宽度并居中，不让正文拉成超长行。 */
+    private int contentWidthPx() {
+        if (layoutMode == MODE_NARROW) return ViewGroup.LayoutParams.MATCH_PARENT;
+        int rail = layoutMode == MODE_WIDE ? RAIL_WIDTH_DP : 0;
+        int available = availableWidthDp() - rail - pagePaddingDp() * 2;
+        int max = layoutMode == MODE_MEDIUM
+                ? CONTENT_MAX_WIDTH_MEDIUM_DP : CONTENT_MAX_WIDTH_WIDE_DP;
+        return dp(Math.max(320, Math.min(available, max)));
     }
 
     /**
@@ -290,14 +590,14 @@ public class MainActivity extends Activity {
 
         // 恢复原先在状态页里展示的校准/识别数量
         recognizeInfoText = new TextView(this);
-        recognizeInfoText.setTextSize(12);
+        recognizeInfoText.setTextSize(13);
         recognizeInfoText.setTextColor(COLOR_HINT);
         recognizeInfoText.setLineSpacing(dp(3), 1f);
         card.addView(recognizeInfoText, topMargin(6));
 
         buildRecognitionSection(card);
         buildPanelSection(card);
-        page.addView(card, topMargin(16));
+        page.addView(card);
     }
 
     /** 卡片 3：运行日志（原「日志」页） */
@@ -306,7 +606,7 @@ public class MainActivity extends Activity {
         LinearLayout card = card();
         card.addView(cardTitle("运行日志"));
         buildLogSection(card);
-        page.addView(card, topMargin(16));
+        page.addView(card);
     }
 
     /** 卡片 4：应用设置（原「识别」页的应用限定 + 原「设置」页的外观/更新/关于） */
@@ -320,7 +620,7 @@ public class MainActivity extends Activity {
         buildFlowSection(card);
         buildAboutSection(card);
         buildFooter(card);
-        page.addView(card, topMargin(16));
+        page.addView(card);
     }
 
     @Override protected void onResume() {
@@ -374,7 +674,7 @@ public class MainActivity extends Activity {
         runStatusDot = new View(this);
         statusWrap.addView(runStatusDot, new LinearLayout.LayoutParams(dp(8), dp(8)));
         runStatusText = new TextView(this);
-        runStatusText.setTextSize(13);
+        runStatusText.setTextSize(14);
         runStatusText.setTextColor(ON_DARK_TEXT);
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-2, -2);
         statusParams.leftMargin = dp(6);
@@ -385,7 +685,7 @@ public class MainActivity extends Activity {
         // 第二层：辅助答题次数（卡内最醒目的数字）
         TextView countLabel = new TextView(this);
         countLabel.setText("辅助答题");
-        countLabel.setTextSize(12);
+        countLabel.setTextSize(13);
         countLabel.setTextColor(ON_DARK_HINT);
         card.addView(countLabel, topMargin(20));
 
@@ -438,7 +738,7 @@ public class MainActivity extends Activity {
 
         // 权限提示 / 错误信息
         runHintText = new TextView(this);
-        runHintText.setTextSize(12);
+        runHintText.setTextSize(13);
         runHintText.setTextColor(ON_DARK_HINT);
         runHintText.setLineSpacing(dp(4), 1f);
         card.addView(runHintText, topMargin(10));
@@ -461,7 +761,7 @@ public class MainActivity extends Activity {
     private TextView blockLabel(String text) {
         TextView view = new TextView(this);
         view.setText(text);
-        view.setTextSize(11);
+        view.setTextSize(12);
         view.setTextColor(ON_DARK_HINT);
         return view;
     }
@@ -846,7 +1146,7 @@ public class MainActivity extends Activity {
         card.addView(manual, topMargin(2));
 
         Button clear = secondaryButton("清除全部校准记录");
-        card.addView(clear, topMarginSized(12, 44));
+        card.addView(clear, topMarginSized(12, 48));
         clear.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 prefs.clearLearned();
@@ -899,7 +1199,7 @@ public class MainActivity extends Activity {
         card.addView(imeHint, topMargin(0));
 
         Button reset = secondaryButton("恢复默认位置与大小");
-        card.addView(reset, topMarginSized(14, 44));
+        card.addView(reset, topMarginSized(14, 48));
         reset.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 prefs.resetPanelAppearance();
@@ -916,23 +1216,80 @@ public class MainActivity extends Activity {
 
     }
 
-    private void buildLogSection(LinearLayout container) {
-        CollapsibleCard section = new CollapsibleCard("诊断日志", false);
+    /**
+     * 黑色终端式日志窗口：高度固定，内容在自己的 ScrollView 里上下滚动。
+     *
+     * 关键点是「高度由布局决定，而不是由日志行数决定」——
+     * 旧实现把 TextView 直接塞进页面，日志一多整页就被撑长，
+     * 按钮被挤出屏幕，导航也被顶走。
+     */
+    private View buildLogTerminal() {
+        FrameLayout frame = new FrameLayout(this);
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(COLOR_LOG_BG);
+        background.setCornerRadius(dp(14));
+        frame.setBackground(background);
 
-        section.content.addView(hintText("每次点击悬浮格都会记录当次扫描的完整节点树、候选评分和判定过程。"
-                + "识别不准时点「复制」把内容发出来即可定位问题。日志只在内存里，退出应用即清空。"));
+        logScroll = new ScrollView(this);
+        logScroll.setVerticalScrollBarEnabled(true);
+        // 圆角终端：内容不要画到内边距里，否则滚动时会压到圆角上
+        logScroll.setClipToPadding(true);
+        logScroll.setPadding(dp(12), dp(12), dp(12), dp(12));
 
         logView = new TextView(this);
-        logView.setTextSize(9);
+        logView.setTextSize(logTextSp());
         logView.setTextColor(COLOR_LOG_TEXT);
         logView.setTypeface(Typeface.MONOSPACE);
         logView.setTextIsSelectable(true);
-        logView.setPadding(dp(10), dp(10), dp(10), dp(10));
-        GradientDrawable logBackground = new GradientDrawable();
-        logBackground.setColor(COLOR_LOG_BG);
-        logBackground.setCornerRadius(dp(10));
-        logView.setBackground(logBackground);
-        section.content.addView(logView, topMargin(10));
+        logView.setLineSpacing(dp(2), 1f);
+        // 长行折行而不是横向溢出：日志窗口不允许把页面撑宽
+        logView.setHorizontallyScrolling(false);
+        logScroll.addView(logView, new ScrollView.LayoutParams(-1, -2));
+
+        // 用户手动滚动后，根据是否接近底部决定要不要继续自动跟随
+        logScroll.setOnScrollChangeListener(new View.OnScrollChangeListener() {
+            @Override public void onScrollChange(View v, int scrollX, int scrollY,
+                                                 int oldScrollX, int oldScrollY) {
+                logFollow = isLogNearBottom();
+            }
+        });
+
+        frame.addView(logScroll, new FrameLayout.LayoutParams(-1, logTerminalHeightPx()));
+        return frame;
+    }
+
+    /** 终端高度：随断点变化，但永远有上限，也不超过可用高度的一半。 */
+    private int logTerminalHeightPx() {
+        int desired;
+        if (layoutMode == MODE_WIDE) desired = 360;
+        else if (layoutMode == MODE_MEDIUM) desired = 300;
+        else desired = 268;
+        // 分屏 / 小屏：留一半高度给页面其他内容，保证按钮还能滚到
+        int cap = Math.max(180, (int) (availableHeightDp() * 0.5f));
+        return dp(Math.min(desired, cap));
+    }
+
+    private int logTextSp() {
+        return layoutMode == MODE_NARROW ? 12 : 13;
+    }
+
+    /** 是否已经接近底部（留 24dp 容差）。 */
+    private boolean isLogNearBottom() {
+        if (logScroll == null) return true;
+        View child = logScroll.getChildAt(0);
+        if (child == null) return true;
+        int maxScroll = child.getHeight() - logScroll.getHeight();
+        if (maxScroll <= 0) return true;
+        return logScroll.getScrollY() >= maxScroll - dp(24);
+    }
+
+    private void buildLogSection(LinearLayout container) {
+        CollapsibleCard section = new CollapsibleCard("诊断日志", true);
+
+        section.content.addView(hintText("每次点击悬浮格都会记录当次扫描的完整节点树、候选评分和判定过程。"
+                + "识别不准时点「复制」把内容发出来即可定位问题。日志只在内存里，最多保留 800 行。"));
+
+        section.content.addView(buildLogTerminal(), topMargin(10));
 
         LinearLayout buttons = new LinearLayout(this);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
@@ -1148,13 +1505,41 @@ public class MainActivity extends Activity {
         if (sizeLabel != null) sizeLabel.setText("方块大小：" + value + " dp");
     }
 
+    /**
+     * 刷新终端内容。追加式刷新，不重建控件。
+     *
+     * 自动跟随策略：
+     * - 追加前用户就在底部附近 → 追加后滚到最底；
+     * - 用户正在向上翻阅历史 → 保持阅读位置，不抢滚动；
+     * - 用户自己滚回底部 → logFollow 自动恢复为 true。
+     * 内容没变化时完全不碰 TextView，避免每秒刷新打断文字选择。
+     */
     private void refreshLog() {
-        if (logView == null) return;
+        if (logView == null || logScroll == null) return;
+
+        boolean follow = logFollow || isLogNearBottom();
+        // setText 会让 ScrollView 有机会丢掉原来的滚动位置，
+        // 所以正在翻阅历史时先把位置记下来，刷新后粘回去。
+        final int keepScroll = logScroll.getScrollY();
+
         String text = TapLog.tail(LOG_TAIL_LINES);
         if (text.isEmpty()) {
             text = "(暂无日志。开启无障碍服务后点击悬浮格，这里就会出现当次扫描记录。)";
         }
-        logView.setText(text);
+        if (!text.contentEquals(logView.getText())) {
+            logView.setText(text);
+            if (!follow) {
+                logScroll.post(new Runnable() {
+                    @Override public void run() { logScroll.scrollTo(0, keepScroll); }
+                });
+            }
+        }
+        if (follow) {
+            logFollow = true;
+            // fullScroll 要等这次布局完成后再执行，否则会被 setText 的重排覆盖
+            logScroll.removeCallbacks(scrollLogToBottom);
+            logScroll.post(scrollLogToBottom);
+        }
     }
 
     /** 改完设置通知服务重建面板（同进程静态调用，不需要 IPC）。 */
@@ -1332,7 +1717,7 @@ public class MainActivity extends Activity {
     private TextView cardTitle(String text) {
         TextView view = new TextView(this);
         view.setText(text);
-        view.setTextSize(15);
+        view.setTextSize(18);
         view.setTextColor(COLOR_TITLE);
         view.setTypeface(null, Typeface.BOLD);
         return view;
@@ -1342,7 +1727,7 @@ public class MainActivity extends Activity {
     private TextView sectionTitle(String text) {
         TextView view = new TextView(this);
         view.setText(text);
-        view.setTextSize(13);
+        view.setTextSize(15);
         view.setTextColor(COLOR_TITLE);
         view.setTypeface(null, Typeface.BOLD);
         view.setLetterSpacing(0.02f);
@@ -1352,7 +1737,7 @@ public class MainActivity extends Activity {
     private TextView hintText(String text) {
         TextView view = new TextView(this);
         view.setText(text);
-        view.setTextSize(12);
+        view.setTextSize(13);
         view.setTextColor(COLOR_HINT);
         view.setLineSpacing(dp(4), 1f);
         return view;
@@ -1361,7 +1746,7 @@ public class MainActivity extends Activity {
     private Switch toggle(String text, boolean checked) {
         Switch view = new Switch(this);
         view.setText(text);
-        view.setTextSize(14);
+        view.setTextSize(15);
         view.setTextColor(COLOR_TEXT);
         view.setChecked(checked);
         view.setPadding(0, dp(6), 0, dp(6));
@@ -1385,7 +1770,7 @@ public class MainActivity extends Activity {
         button.setTextColor(textColor);
         button.setAllCaps(false);
         button.setStateListAnimator(null);
-        // 主题默认 minHeight 约 48dp，会把 44dp 的按钮顶高，这里放开
+        // 主题默认 minHeight 约 48dp，会把固定高度的按钮顶高，这里放开
         button.setMinimumHeight(0);
         button.setMinHeight(0);
     }
@@ -1413,7 +1798,7 @@ public class MainActivity extends Activity {
     }
 
     private LinearLayout.LayoutParams flexParams(int startMarginDp) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(44), 1f);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(48), 1f);
         params.leftMargin = startMarginDp;
         return params;
     }
