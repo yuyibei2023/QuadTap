@@ -81,6 +81,11 @@ public class MainActivity extends Activity {
     private int COLOR_NAV_SELECTED_TEXT;
     private int COLOR_NAV_SELECTED_BG;
     private int COLOR_NAV_RAIL_BG;
+    // 主按钮单独一套配色：深底卡片上用「实心白底 + 深色文字」，
+    // 不能再用「半透明白底 + 白字」那种自相抵消的组合。
+    private int COLOR_PRIMARY_BTN;
+    private int COLOR_PRIMARY_BTN_PRESSED;
+    private int COLOR_PRIMARY_BTN_TEXT;
 
     private boolean darkTheme = false;
 
@@ -106,6 +111,13 @@ public class MainActivity extends Activity {
             COLOR_NAV_SELECTED_TEXT = 0xFFFFFFFF;
             COLOR_NAV_SELECTED_BG = 0xFF1677FF;
             COLOR_NAV_RAIL_BG = 0xFF0B1016;
+            // 夜间卡片：压暗但保留色相（蓝 / 石板蓝 / 墨绿 / 靛蓝）
+            CARD_RUN = 0xFF10427F;
+            CARD_RECOGNIZE = 0xFF152A45;
+            CARD_LOG = 0xFF0B3B38;
+            CARD_SETTINGS = 0xFF1B2B63;
+            CARD_RECOGNIZE_DARK = true;
+            CARD_LOG_DARK = true;
         } else {
             COLOR_BG = 0xFFF2F4F8;
             COLOR_CARD = 0xFFFFFFFF;
@@ -127,6 +139,13 @@ public class MainActivity extends Activity {
             COLOR_NAV_SELECTED_TEXT = 0xFFFFFFFF;
             COLOR_NAV_SELECTED_BG = 0xFF1677FF;
             COLOR_NAV_RAIL_BG = 0xFFE8EDF6;
+            // 白天卡片：品牌蓝 + 浅蓝 + 亮青 + 深蓝
+            CARD_RUN = 0xFF1677FF;
+            CARD_RECOGNIZE = 0xFFD8E9FF;
+            CARD_LOG = 0xFF19C7C2;
+            CARD_SETTINGS = 0xFF2867F0;
+            CARD_RECOGNIZE_DARK = false;
+            CARD_LOG_DARK = false;
         }
     }
 
@@ -223,11 +242,18 @@ public class MainActivity extends Activity {
         }
     };
 
-    // ---- 钱包式卡片配色（固定品牌色，不随深浅主题变化）----
-    private static final int CARD_BLUE = 0xFF1677FF;        // 卡片 1 运行控制
-    private static final int CARD_LIGHT_BLUE = 0xFFD8E9FF;  // 卡片 2 识别与校准
-    private static final int CARD_TEAL = 0xFF19C7C2;        // 卡片 3 运行日志
-    private static final int CARD_DEEP_BLUE = 0xFF2867F0;   // 卡片 4 应用设置
+    // ---- 钱包式卡片配色：跟随深浅主题切换 ----
+    // 白天用高饱和的品牌蓝 / 亮青；夜间整体压暗、保留色相，
+    // 避免浅蓝 #D8E9FF 和亮青 #19C7C2 在暗环境里变成两块发光板。
+    private int CARD_RUN;            // 卡片 1 运行控制
+    private int CARD_RECOGNIZE;      // 卡片 2 识别与校准
+    private int CARD_LOG;            // 卡片 3 运行日志
+    private int CARD_SETTINGS;       // 卡片 4 应用设置
+    /** 这两张卡白天是浅底深字，夜间变成深底浅字，正文配色必须跟着翻转。 */
+    private boolean CARD_RECOGNIZE_DARK;
+    private boolean CARD_LOG_DARK;
+    /** 当前正在构建的卡片是不是「深底浅字」—— 滑块、单选按钮这些原生控件要据此换色。 */
+    private boolean cardDarkContent;
 
     // 彩色卡片上的文字/按钮配色 —— 深色卡片一套，浅蓝卡片一套
     private static final int ON_DARK_TITLE = 0xFFFFFFFF;
@@ -251,6 +277,7 @@ public class MainActivity extends Activity {
      */
     private void useCardStyle(int cardColor, boolean darkContent) {
         COLOR_CARD = cardColor;
+        cardDarkContent = darkContent;
         COLOR_STROKE = darkContent ? ON_DARK_STROKE : ON_LIGHT_STROKE;
         COLOR_TITLE = darkContent ? ON_DARK_TITLE : ON_LIGHT_TITLE;
         COLOR_TEXT = darkContent ? ON_DARK_TEXT : ON_LIGHT_TEXT;
@@ -259,6 +286,10 @@ public class MainActivity extends Activity {
         COLOR_BTN_PRESSED = darkContent ? ON_DARK_BTN_PRESSED : ON_LIGHT_BTN_PRESSED;
         COLOR_ACCENT = darkContent ? ON_DARK_BTN : 0xFF1677FF;
         COLOR_ACCENT_PRESSED = darkContent ? ON_DARK_BTN_PRESSED : 0xFF255FC9;
+        // 主按钮：深底卡片用实心白底 + 深色字，浅底卡片用品牌蓝 + 白字
+        COLOR_PRIMARY_BTN = darkContent ? 0xFFFFFFFF : 0xFF1677FF;
+        COLOR_PRIMARY_BTN_PRESSED = darkContent ? 0xFFD8E3F5 : 0xFF255FC9;
+        COLOR_PRIMARY_BTN_TEXT = darkContent ? 0xFF0A1F3D : 0xFFFFFFFF;
     }
 
     private int dp(float value) {
@@ -584,7 +615,7 @@ public class MainActivity extends Activity {
 
     /** 卡片 2：识别与校准（原「识别」页的识别开关 + 悬浮面板设置） */
     private void buildRecognitionArea(LinearLayout page) {
-        useCardStyle(CARD_LIGHT_BLUE, false);
+        useCardStyle(CARD_RECOGNIZE, CARD_RECOGNIZE_DARK);
         LinearLayout card = card();
         card.addView(cardTitle("识别与校准"));
 
@@ -602,7 +633,7 @@ public class MainActivity extends Activity {
 
     /** 卡片 3：运行日志（原「日志」页） */
     private void buildLogArea(LinearLayout page) {
-        useCardStyle(CARD_TEAL, false);
+        useCardStyle(CARD_LOG, CARD_LOG_DARK);
         LinearLayout card = card();
         card.addView(cardTitle("运行日志"));
         buildLogSection(card);
@@ -611,7 +642,7 @@ public class MainActivity extends Activity {
 
     /** 卡片 4：应用设置（原「识别」页的应用限定 + 原「设置」页的外观/更新/关于） */
     private void buildSettingsArea(LinearLayout page) {
-        useCardStyle(CARD_DEEP_BLUE, true);
+        useCardStyle(CARD_SETTINGS, true);
         LinearLayout card = card();
         card.addView(cardTitle("应用设置"));
         buildScopeSection(card);
@@ -651,7 +682,7 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------------ 卡片 1：运行控制
 
     private void buildRunCard(LinearLayout page) {
-        useCardStyle(CARD_BLUE, true);
+        useCardStyle(CARD_RUN, true);
 
         LinearLayout card = card();
         card.setPadding(dp(20), dp(20), dp(20), dp(22));
@@ -733,6 +764,8 @@ public class MainActivity extends Activity {
                 onRunSwitchChanged(isChecked);
             }
         });
+        // 这张卡的底色就是 #1677FF，必须换掉主题默认的 accent 轨道色
+        applySwitchTint(runSwitch);
         control.addView(runSwitch);
         card.addView(control, topMargin(18));
 
@@ -1170,6 +1203,14 @@ public class MainActivity extends Activity {
         SeekBar sizeBar = new SeekBar(this);
         sizeBar.setMax(Prefs.MAX_CELL_SIZE_DP - Prefs.MIN_CELL_SIZE_DP);
         sizeBar.setProgress(prefs.cellSizeDp() - Prefs.MIN_CELL_SIZE_DP);
+        // 原生 SeekBar 用亮色主题的控件色；卡片在夜间变成深底后，
+        // 未填充轨道会糊在卡面上，所以按卡片深浅显式换色。
+        sizeBar.setProgressTintList(ColorStateList.valueOf(
+                cardDarkContent ? 0xFF7FAEFA : 0xFF1677FF));
+        sizeBar.setProgressBackgroundTintList(ColorStateList.valueOf(
+                cardDarkContent ? 0x4DFFFFFF : 0x33000000));
+        sizeBar.setThumbTintList(ColorStateList.valueOf(
+                cardDarkContent ? 0xFFFFFFFF : 0xFF1677FF));
         sizeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
                 updateSizeLabel(Prefs.MIN_CELL_SIZE_DP + progress);
@@ -1228,6 +1269,8 @@ public class MainActivity extends Activity {
         GradientDrawable background = new GradientDrawable();
         background.setColor(COLOR_LOG_BG);
         background.setCornerRadius(dp(14));
+        // 夜间日志卡本身也是深色，靠描边把终端窗口和卡面区分开
+        background.setStroke(dp(1), COLOR_STROKE);
         frame.setBackground(background);
 
         logScroll = new ScrollView(this);
@@ -1347,6 +1390,11 @@ public class MainActivity extends Activity {
             button.setTextSize(14);
             button.setTextColor(COLOR_TEXT);
             button.setPadding(0, dp(8), 0, dp(8));
+            // 同上：选中色若沿用主题 accent，在深蓝卡面上几乎看不出来
+            button.setButtonTintList(new ColorStateList(
+                    new int[][]{ new int[]{android.R.attr.state_checked}, new int[]{} },
+                    new int[]{ cardDarkContent ? 0xFFFFFFFF : 0xFF1677FF,
+                               cardDarkContent ? 0x80FFFFFF : 0x59000000 }));
             group.addView(button);
             if (prefs.themeMode() == modes[i]) checkedId = 1000 + i;
         }
@@ -1750,6 +1798,7 @@ public class MainActivity extends Activity {
         view.setTextColor(COLOR_TEXT);
         view.setChecked(checked);
         view.setPadding(0, dp(6), 0, dp(6));
+        applySwitchTint(view);
         return view;
     }
 
@@ -1758,6 +1807,44 @@ public class MainActivity extends Activity {
         return new ColorStateList(
                 new int[][]{ new int[]{android.R.attr.state_pressed}, new int[]{} },
                 new int[]{ pressed, normal });
+    }
+
+    /**
+     * 统一开关配色。
+     *
+     * 默认的 Switch 用主题 colorAccent(#3478F6) 画「开启」轨道，
+     * 而「运行控制」卡片本身就是 #1677FF，两者几乎同色 —— 开启后轨道在卡面上直接消失。
+     * 单一一套颜色也没法通吃：四张卡从 #D8E9FF（相对亮度 0.80）到夜间 #152A45（0.02），
+     * 所以按「夜间 / 白天深底卡 / 白天浅底卡」分三套，保证「开」和「关」彼此拉得开：
+     * 夜间与深底卡是「暗关 → 亮开」，浅底卡是「白关 → 深绿开」。
+     */
+    private void applySwitchTint(Switch view) {
+        if (view == null) return;
+        int trackOff;
+        int trackOn;
+        int thumbOff;
+        int thumbOn;
+        if (darkTheme) {
+            // 夜间四张卡都是深底：半透明白关轨 + 薄荷绿开轨
+            // （开轨对卡面 6.5~9.3:1，和运行状态点用同一个 #5BE39B）
+            trackOff = 0x4DFFFFFF; thumbOff = 0xFFFFFFFF;
+            trackOn = 0xFF5BE39B;  thumbOn = 0xFF0A1A2E;
+        } else if (cardDarkContent) {
+            // 白天的高饱和深底卡（#1677FF / #2867F0）：
+            // 深色关轨（对卡面 4.8 / 4.1:1）+ 实心白开轨（4.1 / 4.6:1），两态相差约 21:1
+            trackOff = 0xFF0A1A2E; thumbOff = 0xFF8FA3BF;
+            trackOn = 0xFFFFFFFF;  thumbOn = 0xFF0A1A2E;
+        } else {
+            // 白天的浅底卡（#D8E9FF / #19C7C2）：白色关轨 + 深绿开轨（对卡面 7.4~12.7:1）
+            trackOff = 0xFFFFFFFF; thumbOff = 0xFF5B6B85;
+            trackOn = 0xFF0E7A46;  thumbOn = 0xFFFFFFFF;
+        }
+        view.setThumbTintList(new ColorStateList(
+                new int[][]{ new int[]{android.R.attr.state_checked}, new int[]{} },
+                new int[]{ thumbOn, thumbOff }));
+        view.setTrackTintList(new ColorStateList(
+                new int[][]{ new int[]{android.R.attr.state_checked}, new int[]{} },
+                new int[]{ trackOn, trackOff }));
     }
 
     /** 统一的按钮样式：12dp 圆角、按下变色、去掉默认的立体抬起动画。 */
@@ -1779,7 +1866,10 @@ public class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(text);
         button.setTextSize(15);
-        styleButton(button, COLOR_ACCENT, COLOR_ACCENT_PRESSED, Color.WHITE);
+        // 用独立的「主按钮」配色：深底卡片是实心白底 + 深色字，
+        // 浅底卡片是品牌蓝 + 白字。原来用 COLOR_ACCENT 在深底卡上是
+        // 半透明白底 + 白字，文字直接看不见。
+        styleButton(button, COLOR_PRIMARY_BTN, COLOR_PRIMARY_BTN_PRESSED, COLOR_PRIMARY_BTN_TEXT);
         return button;
     }
 
