@@ -16,6 +16,7 @@ import android.hardware.HardwareBuffer;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.view.Display;
 import android.view.Gravity;
@@ -85,6 +86,9 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     /** 同一个标签最多保留几个候选参与组合评分。 */
     private static final int MAX_CANDIDATES_PER_LABEL = 3;
 
+    /** OCR 超时兜底：超过这个时间还没收尾就强制结束，避免 busy 永久为 true。 */
+    private static final long OCR_TIMEOUT_MS = 15000L;
+
     // ---- 悬浮面板配色。A/B 用主色蓝，C/D 用同族的低饱和蓝灰，面板整体更协调。
     private static final int CELL_BLUE = 0xFF3478F6;
     private static final int CELL_BLUE_PRESSED = 0xFF255FC9;
@@ -115,6 +119,47 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     /** 同一时间只允许一次识别流程，避免连点叠出多路截屏。 */
     private volatile boolean busy = false;
     private volatile int lastFoundCount = 0;
+
+    // ---- 运行控制（应用内开关）。注意它和「系统无障碍是否连接」是两件事。----
+    /** 辅助答题功能本次是否在运行。false 时所有点击入口一律拒绝。 */
+    private volatile boolean assistRunning = false;
+    /** 本次运行起点（elapsedRealtime 毫秒），0 表示未运行。 */
+    private volatile long runStartedAt = 0L;
+    /**
+     * 当前题目**已确证**的最大选项序号：只会因为「正向识别到 A/B/C/D 中的某一项」而增大。
+     * 0 表示什么都没确证 —— 按需求「识别失败或选项数量不确定时，不执行辅助点击」，
+     * 此时一律不派发点击。
+     *
+     * 注意：它不是「题目总共有几项」，而是「已经确证到第几项」。
+     * 所以只识别到 A、B 时它是 2（A、B 可用，C、D 属于可能越界，拒绝），
+     * 绝不被解释为「这是判断题」。
+     */
+    private volatile int allowedLabelCount = 0;
+
+    // allowedLabelCount 的来源，仅用于日志诊断。
+    // 常量先声明，避免字段初始化器引用后面才声明的常量（非法前向引用风险）。
+    private static final int TYPE_NONE = 0;        // 未知
+    private static final int TYPE_JUDGE = 1;       // 正向识别到「正确/错误」
+    private static final int TYPE_LABELS = 2;      // 正向识别到字母标签
+    private static final int TYPE_POSITIONAL = 3;  // 位置兜底
+    private static final int TYPE_OCR = 4;         // OCR
+
+    private static String typeSourceName(int source) {
+        if (source == TYPE_JUDGE) return "判断题(正确/错误)";
+        if (source == TYPE_LABELS) return "字母标签";
+        if (source == TYPE_POSITIONAL) return "位置兜底";
+        if (source == TYPE_OCR) return "OCR";
+        return "未知";
+    }
+
+    private volatile int typeSource = TYPE_NONE;
+
+    /**
+     * OCR 任务代次。每次发起 OCR 或在停止/重新开始时自增，
+     * 旧代次的回调一律丢弃 —— 只靠 assistRunning 不够，
+     * 因为停止后重新开启时它又会变回 true。
+     */
+    private volatile int ocrToken = 0;
     private long lastScanAt = 0;
     private long lastShotAt = 0;
     private long lastImeCheckAt = 0;
@@ -136,7 +181,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     private final Runnable scanRunnable = new Runnable() {
         @Override public void run() {
             refreshWindowState();
-            if (panelAttached) scanAccessibilityTree(false);
+            if (assistRunning && panelAttached) scanAccessibilityTree(false);
         }
     };
     private final Runnable hideMarksRunnable = new Runnable() {
@@ -177,9 +222,13 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 ? prefs.allowedPackages().toString()
                 : "未限制(所有应用都显示)"));
         TapLog.add("方块大小: " + prefs.cellSizeDp() + "dp   输入法弹出时隐藏: " + prefs.hideOnIme());
+        // 恢复用户上次的开关意图：开则直接运行，关则保持停止（不擅自自动启动）
+        assistRunning = false;
+        runStartedAt = 0L;
+        setAssistRunning(prefs.assistRunning(), false);
         refreshWindowState();
         scanAccessibilityTree(false);
-        toast("面板已就绪：点击定位，长按手动校准");
+        if (assistRunning) toast("面板已就绪：点击定位，长按手动校准");
     }
 
     @Override public void onConfigurationChanged(Configuration newConfig) {
@@ -380,6 +429,133 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     }
 
     /** 设置页改动后由 Activity 调过来（同进程静态调用），重建面板并重新判定显示。 */
+    // ---------------------------------------------------------------- 运行控制
+
+    /** 辅助功能本次是否在运行（供设置页读取真实状态，而不是看开关外观）。 */
+    static boolean isAssistRunning() {
+        QuadTapAccessibilityService service = instance;
+        return service != null && service.assistRunning;
+    }
+
+    /** 本次运行起点（elapsedRealtime）。0 表示未运行。 */
+    static long runStartedAt() {
+        QuadTapAccessibilityService service = instance;
+        return service == null ? 0L : service.runStartedAt;
+    }
+
+    /** 当前题型允许的标签数，0 表示未确定。 */
+    static int allowedLabelCount() {
+        QuadTapAccessibilityService service = instance;
+        return service == null ? 0 : service.allowedLabelCount;
+    }
+
+    /**
+     * Activity 改完开关后调用：把持久化的意图应用到已连接的服务实例上。
+     *
+     * 关键点：主线程调用时**同步**执行。
+     * 之前用 handler.post 异步应用，调用方紧接着 refreshStatus() 读到的还是旧状态，
+     * 会把开关弹回原样，而且之后界面再也不刷新 —— 这就是 S1。
+     * setAssistRunning 会操作 WindowManager / View，本来就必须在主线程执行，
+     * 所以主线程直接调用是安全的。
+     */
+    static void applyAssistRunningFromPrefs() {
+        final QuadTapAccessibilityService service = instance;
+        if (service == null) return;
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            service.setAssistRunning(service.prefs.assistRunning(), true);
+        } else {
+            service.handler.post(new Runnable() {
+                @Override public void run() {
+                    service.setAssistRunning(service.prefs.assistRunning(), true);
+                }
+            });
+        }
+    }
+
+    /** 切换运行状态：开启时开始计时，关闭时执行完整停止流程。 */
+    private void setAssistRunning(boolean on, boolean announce) {
+        if (on == assistRunning) {
+            if (on) applyPanelVisibility();
+            return;
+        }
+        assistRunning = on;
+        if (on) {
+            // 新运行周期：让上一周期遗留的 OCR 回调全部作废
+            ocrToken++;
+            runStartedAt = SystemClock.elapsedRealtime();
+            TapLog.add("辅助功能已开启，本次运行计时开始");
+            applyPanelVisibility();
+            scanAccessibilityTree(false);
+            if (announce) toast("辅助功能已开启");
+        } else {
+            stopAssisting();
+            if (announce) toast("辅助功能已停止");
+        }
+    }
+
+    /**
+     * 完整停止流程：拒绝新点击 → 取消排队任务 → 摘除悬浮窗 → 停止计时。
+     *
+     * 只停 QuadTap 自己的辅助行为，不去关闭系统无障碍 ——
+     * Android 不允许应用自行开启无障碍服务，所以开关无法做到完全对称；
+     * 系统无障碍可能仍保持连接，但 QuadTap 不再执行任何操作。
+     */
+    private void stopAssisting() {
+        runStartedAt = 0L;
+        allowedLabelCount = 0;
+        typeSource = TYPE_NONE;
+        busy = false;
+        // 让所有正在进行的 OCR 任务作废：停止后重新开启也不复用旧结果
+        ocrToken++;
+        // 顺带复位截屏节流时间戳：否则重新开启后 400ms 内首按会被误报「截屏太频繁」（B5）
+        lastShotAt = 0L;
+        // 取消所有延迟任务：扫描合并、OCR 启动、标记隐藏、校准超时
+        handler.removeCallbacksAndMessages(null);
+        cancelPicker();
+        if (markLayer != null) markLayer.removeAllViews();
+        setOverlaysVisible(false);
+        targetBounds.clear();
+        targetText.clear();
+        TapLog.add("辅助功能已停止：取消排队任务并移除悬浮窗");
+    }
+
+    /**
+     * 候选点击是否允许：只有「序号 ≤ 已确证的最大序号」才放行。
+     * 什么都没确证（0）时一律拒绝，这是需求要求的保守策略。
+     */
+    private boolean isLabelAllowed(String label) {
+        int index = 0;
+        for (int i = 0; i < LABELS.length; i++) {
+            if (LABELS[i].equals(label)) index = i + 1;
+        }
+        if (index == 0) return false;
+        if (allowedLabelCount <= 0) {
+            TapLog.add("尚未确证任何选项（来源=" + typeSourceName(typeSource)
+                    + "），拒绝点击 " + label);
+            return false;
+        }
+        if (index > allowedLabelCount) {
+            TapLog.add("仅确证到 " + allowedLabelCount + " 项（来源=" + typeSourceName(typeSource)
+                    + "），" + label + " 可能越界，拒绝点击");
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 已确证的最大选项序号：遍历 A→D，取存在的最高那一位。
+     * 用「最高序号」而不是「命中个数」，可以避免
+     * 「只识别到 A、C 两项却把 C 当越界拒掉」这种错误。
+     */
+    private static int highestLabelIndex(Map<String, Rect> map) {
+        if (map == null) return 0;
+        int highest = 0;
+        for (int i = 0; i < LABELS.length; i++) {
+            if (map.containsKey(LABELS[i])) highest = i + 1;
+        }
+        return highest;
+    }
+
     static void notifySettingsChanged() {
         final QuadTapAccessibilityService service = instance;
         if (service == null) return;
@@ -428,7 +604,8 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         if (panel == null || windowManager == null || panelParams == null) return;
         if (busy) return;   // 正在截屏识别，等 finishOcr 再统一处理
 
-        boolean shouldShow = prefs.isPackageAllowed(foregroundPackage);
+        // 停止状态下根本不挂窗口（不是隐藏）
+        boolean shouldShow = assistRunning && prefs.isPackageAllowed(foregroundPackage);
         if (shouldShow && prefs.hideOnIme() && imeVisible) shouldShow = false;
         if (shouldShow == panelAttached) return;
 
@@ -461,6 +638,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
     private boolean onPanelTouch(MotionEvent event) {
         if (panelParams == null || windowManager == null) return false;
+        if (!assistRunning) return false;
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 dragging = false;
@@ -690,14 +868,39 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     private void performMappedTap(String label) {
         TapLog.add("");
         TapLog.add("===== 点击 " + label + " =====");
+        if (!assistRunning) {
+            TapLog.add("辅助功能已停止，忽略本次点击");
+            toast("辅助功能已停止，请先在首页打开开关");
+            return;
+        }
         if (busy) {
             TapLog.add("忽略: 上一次识别还在进行中");
             toast("正在识别中，请稍候");
             return;
         }
 
-        if (!prefs.manualOnly()) {
-            scanAccessibilityTree(true);
+        // 无论哪种模式都扫描一次：manualOnly 只用它刷新「已确证选项」，
+        // 绝不取它的坐标，所以原有坐标映射逻辑没有改变。
+        // 这样 manualOnly 也不会再用上一次题目的过期题型数据。
+        scanAccessibilityTree(true);
+
+        // allowedLabelCount 是「已确证到的最高序号」，0 表示什么都没确证。
+        final boolean typeKnown = allowedLabelCount > 0;
+
+        // C1 修复：门禁只在题型已确知时前置拦截。
+        // 题型未知时如果也在这里 return，runOcrFallback 就永远走不到，
+        // 等于把 OCR 回退整个删掉。未知时改为放行到后续流程，
+        // 但下面的点击分支都要求 typeKnown，所以不会产生「未经确认的点击」。
+        if (typeKnown && !isLabelAllowed(label)) {
+            toast("当前题型没有 " + label + " 项，已忽略");
+            return;
+        }
+        if (!typeKnown) {
+            TapLog.add("尚未确证题型：不做节点/校准点击，转由 OCR 重新识别");
+        }
+
+        // ① 节点定位：节点命中必须在题型已确知的前提下，不能绕过门禁
+        if (!prefs.manualOnly() && typeKnown) {
             Rect rect = targetBounds.get(label);
             if (rect != null) {
                 TapLog.add("来源=节点定位  中心=(" + rect.centerX() + "," + rect.centerY() + ")");
@@ -708,24 +911,28 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 return;
             }
             TapLog.add("节点定位失败: 该标签没有可用候选");
-        } else {
-            TapLog.add("已开启「仅用校准位置」, 跳过节点扫描");
+        } else if (prefs.manualOnly() && typeKnown) {
+            TapLog.add("已开启「仅用校准位置」: 扫描仅用于刷新题型，坐标仍取校准记录");
         }
 
-        Rect learned = learnedRect(label);
-        if (learned != null) {
-            TapLog.add("来源=已校准位置  中心=(" + learned.centerX() + "," + learned.centerY() + ")");
-            tap(learned.centerX(), learned.centerY());
-            toast("使用已校准位置点击 " + label);
-            return;
+        // ② 校准坐标：manualOnly 的原有映射保持不变，但同样只在题型已确知时使用
+        if (typeKnown) {
+            Rect learned = learnedRect(label);
+            if (learned != null) {
+                TapLog.add("来源=已校准位置  中心=(" + learned.centerX() + "," + learned.centerY() + ")");
+                tap(learned.centerX(), learned.centerY());
+                toast("使用已校准位置点击 " + label);
+                return;
+            }
+            if (prefs.manualOnly()) {
+                TapLog.add("无校准记录, 且已开启仅手动模式 -> 放弃");
+                toast("尚未校准 " + label + "，请长按该格取点");
+                return;
+            }
         }
 
-        if (prefs.manualOnly()) {
-            TapLog.add("无校准记录, 且已开启仅手动模式 -> 放弃");
-            toast("尚未校准 " + label + "，请长按该格取点");
-            return;
-        }
-
+        // ③ OCR 回退：题型未知时的唯一出路。OCR 会用自己的识别结果
+        //    重新建立题型并再过一次门禁（applyOcrResult），不可靠就仍然不点。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && prefs.useOcr() && recognizer != null) {
             runOcrFallback(label);
         } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
@@ -940,6 +1147,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
 
     private void pickBest(Map<String, List<Candidate>> found, List<Candidate> rows, boolean verbose) {
         Point size = screenSize();
+        int source = TYPE_NONE;
         if (verbose) TapLog.add("--- 标签候选与评分 ---");
 
         for (String label : LABELS) {
@@ -960,6 +1168,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
             if (best != null) {
                 targetBounds.put(label, best.rect);
                 targetText.put(label, best.text);
+                source = TYPE_LABELS;
                 if (verbose) TapLog.add("  -> 选中 " + label + " " + rectToString(best.rect));
             } else if (verbose && list != null && !list.isEmpty()) {
                 TapLog.add("  -> 候选全部被尺寸过滤");
@@ -975,6 +1184,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 targetText.put("A", yes.text);
                 targetBounds.put("B", no.rect);
                 targetText.put("B", no.text);
+                source = TYPE_JUDGE;
                 if (verbose) TapLog.add("判断题兜底生效: 正确->A 错误->B");
             }
         }
@@ -995,6 +1205,7 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                     detail.append(LABELS[i]).append("=\"").append(shorten(candidate.text)).append("\" ");
                 }
                 if (verbose) TapLog.add("位置兜底生效(" + column.size() + " 行): " + detail);
+                source = TYPE_POSITIONAL;
             }
         }
 
@@ -1020,7 +1231,16 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         }
 
         lastFoundCount = targetBounds.size();
-        if (verbose) TapLog.add("扫描结果: 定位到 " + lastFoundCount + " 个标签");
+        // 记「已确证到的最高序号」，而不是「命中个数」——
+        // 只识别到 A、B 意味着 A、B 可用、C、D 可能越界需拒绝，
+        // 但绝不把它解释成「这是判断题」。
+        allowedLabelCount = highestLabelIndex(targetBounds);
+        typeSource = source;
+        if (verbose) {
+            TapLog.add("扫描结果: 定位到 " + lastFoundCount + " 个标签，"
+                    + "已确证到第 " + allowedLabelCount + " 项（来源="
+                    + typeSourceName(typeSource) + "）");
+        }
     }
 
     private int scoreOf(Candidate candidate, Point size) {
@@ -1192,58 +1412,131 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         }
         lastShotAt = now;
 
-        TapLog.add("进入 OCR 回退 (目标 " + label + ")");
+        // 本次 OCR 的代次：每一步回调都先比对它。
+        // 只靠 assistRunning 不够 —— 停止后重新开启时它又会变回 true，
+        // 旧任务会误认为自己是有效的。
+        final int token = ++ocrToken;
+        TapLog.add("进入 OCR 回退 (目标 " + label + "，代次 " + token + ")");
         busy = true;
         setOverlaysVisible(false);
+
+        // 超时兜底：万一系统两个回调都不触发，busy 会永远卡住。
+        // 只结束「当前仍然有效」的那一代任务，不会误伤新任务。
         handler.postDelayed(new Runnable() {
             @Override public void run() {
+                if (token != ocrToken) return;
+                if (!busy) return;
+                TapLog.add("OCR 超时兜底：强制结束代次 " + token);
+                finishOcr(token);
+                // 作废该代次，避免超时结束后迟到的回调又点一次
+                if (token == ocrToken) ocrToken++;
+            }
+        }, OCR_TIMEOUT_MS);
+
+        handler.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (!isOcrTokenValid(token)) {
+                    TapLog.add("OCR 代次已失效，取消本次截屏识别");
+                    finishOcr(token);
+                    return;
+                }
                 try {
                     takeScreenshot(Display.DEFAULT_DISPLAY, worker, new TakeScreenshotCallback() {
                         @Override public void onSuccess(ScreenshotResult result) {
-                            Bitmap software = toSoftwareBitmap(result);
-                            if (software == null) {
-                                TapLog.add("OCR 失败: 截图无法转成 ARGB_8888 软件位图");
-                                finishOcr();
-                                toast("截图转换失败");
-                                return;
+                            // 这个回调体运行在 worker 线程，外层的 try/catch 只能包住
+                            // takeScreenshot() 的同步调用。InputImage.fromBitmap /
+                            // recognizer.process 抛异常时必须在这里接住，
+                            // 否则 finishOcr 不执行 -> busy 永久为 true（C2）。
+                            Bitmap image = null;
+                            try {
+                                if (!isOcrTokenValid(token)) {
+                                    TapLog.add("OCR 代次已失效，丢弃截屏结果");
+                                    finishOcr(token);
+                                    return;
+                                }
+                                image = toSoftwareBitmap(result);
+                                if (image == null) {
+                                    TapLog.add("OCR 失败: 截图无法转成 ARGB_8888 软件位图");
+                                    boolean current = isOcrTokenValid(token);
+                                    finishOcr(token);
+                                    if (current) toast("截图转换失败");
+                                    return;
+                                }
+                                TapLog.add("截屏成功 " + image.getWidth() + "x" + image.getHeight()
+                                        + " config=" + image.getConfig());
+                                final Bitmap bitmap = image;
+                                InputImage input = InputImage.fromBitmap(bitmap, 0);
+                                recognizer.process(input)
+                                        .addOnSuccessListener(new com.google.android.gms.tasks.OnSuccessListener<Text>() {
+                                            @Override public void onSuccess(Text text) {
+                                                Map<String, Rect> ocr;
+                                                try {
+                                                    ocr = findOcrTargets(text);
+                                                } catch (Throwable t2) {
+                                                    TapLog.add("OCR 结果解析异常: " + t2);
+                                                    recycleQuietly(bitmap);
+                                                    finishOcr(token);
+                                                    return;
+                                                }
+                                                recycleQuietly(bitmap);
+                                                if (!isOcrTokenValid(token)) {
+                                                    TapLog.add("OCR 代次已失效，丢弃识别结果");
+                                                    finishOcr(token);
+                                                    return;
+                                                }
+                                                finishOcr(token);
+                                                applyOcrResult(label, ocr, token);
+                                            }
+                                        })
+                                        .addOnFailureListener(new com.google.android.gms.tasks.OnFailureListener() {
+                                            @Override public void onFailure(Exception e) {
+                                                TapLog.add("OCR 失败: " + e);
+                                                recycleQuietly(bitmap);
+                                                boolean current = isOcrTokenValid(token);
+                                                finishOcr(token);
+                                                if (current) toast("OCR 识别失败");
+                                            }
+                                        });
+                            } catch (Throwable t) {
+                                TapLog.add("OCR 回调异常: " + t);
+                                recycleQuietly(image);
+                                boolean current = isOcrTokenValid(token);
+                                finishOcr(token);
+                                // 作废仍在途的回调，避免异常之后又被点一次
+                                if (token == ocrToken) ocrToken++;
+                                if (current) toast("屏幕识别失败");
                             }
-                            TapLog.add("截屏成功 " + software.getWidth() + "x" + software.getHeight()
-                                    + " config=" + software.getConfig());
-                            final Bitmap image = software;
-                            InputImage input = InputImage.fromBitmap(image, 0);
-                            recognizer.process(input)
-                                    .addOnSuccessListener(new com.google.android.gms.tasks.OnSuccessListener<Text>() {
-                                        @Override public void onSuccess(Text text) {
-                                            Map<String, Rect> ocr = findOcrTargets(text);
-                                            image.recycle();
-                                            finishOcr();
-                                            applyOcrResult(label, ocr);
-                                        }
-                                    })
-                                    .addOnFailureListener(new com.google.android.gms.tasks.OnFailureListener() {
-                                        @Override public void onFailure(Exception e) {
-                                            TapLog.add("OCR 失败: " + e);
-                                            image.recycle();
-                                            finishOcr();
-                                            toast("OCR 识别失败");
-                                        }
-                                    });
                         }
 
                         @Override public void onFailure(int errorCode) {
                             TapLog.add("截屏失败: " + describeScreenshotError(errorCode)
                                     + " (code=" + errorCode + ")");
-                            finishOcr();
-                            toast("无法读取屏幕：" + describeScreenshotError(errorCode));
+                            boolean current = isOcrTokenValid(token);
+                            finishOcr(token);
+                            if (current) toast("无法读取屏幕：" + describeScreenshotError(errorCode));
                         }
                     });
                 } catch (Throwable t) {
                     TapLog.add("截屏抛异常: " + t);
-                    finishOcr();
-                    toast("屏幕识别失败");
+                    boolean current = isOcrTokenValid(token);
+                    finishOcr(token);
+                    if (current) toast("屏幕识别失败");
                 }
             }
         }, 220);
+    }
+
+    /** 释放位图；已释放过就跳过，避免重复 recycle。 */
+    private static void recycleQuietly(Bitmap bitmap) {
+        if (bitmap == null) return;
+        try {
+            if (!bitmap.isRecycled()) bitmap.recycle();
+        } catch (Exception ignored) { }
+    }
+
+    /** 代次仍然有效且仍在运行，才允许继续处理这次 OCR 结果。 */
+    private boolean isOcrTokenValid(int token) {
+        return token == ocrToken && assistRunning;
     }
 
     /**
@@ -1276,10 +1569,20 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         return "系统返回错误码 " + errorCode;
     }
 
-    private void finishOcr() {
+    /**
+     * OCR 收尾。代次不符说明期间停止过、或已发起新一轮 OCR，
+     * 此时不要复位别人的 busy，也不要把悬浮窗恢复出来。
+     */
+    private void finishOcr(int token) {
+        if (token != ocrToken) {
+            TapLog.add("OCR 代次 " + token + " 已过期，跳过收尾");
+            return;
+        }
         busy = false;
         handler.post(new Runnable() {
             @Override public void run() {
+                // 停止后绝不重新挂出悬浮窗（H1）
+                if (!assistRunning) return;
                 setOverlaysVisible(true);
                 // 识别期间可能切换了应用，这里统一补一次显示判定。
                 applyPanelVisibility();
@@ -1314,10 +1617,38 @@ public class QuadTapAccessibilityService extends AccessibilityService {
         }
     }
 
-    private void applyOcrResult(String requested, Map<String, Rect> ocr) {
+    private void applyOcrResult(String requested, Map<String, Rect> ocr, int token) {
+        if (!isOcrTokenValid(token)) {
+            TapLog.add("OCR 代次已失效，丢弃结果 " + requested);
+            return;
+        }
+        if (!assistRunning) {
+            TapLog.add("已停止，丢弃本次 OCR 结果");
+            return;
+        }
         if (ocr.isEmpty()) {
             TapLog.add("OCR 结论: 没有一个标签被识别出来 -> 放弃");
             toast("未找到 " + requested + "，请长按该格取点");
+            return;
+        }
+
+        // 题型状态更新规则（H3）：
+        // 只有「当前还没有任何确证」且「OCR 至少认出 2 项」时才用 OCR 建立题型；
+        // 已经有更可靠的节点判定时，OCR 的部分结果一律不得覆盖，
+        // 更不能用 Math.max 把两者混合。
+        if (allowedLabelCount <= 0 && ocr.size() >= 2) {
+            allowedLabelCount = highestLabelIndex(ocr);
+            typeSource = TYPE_OCR;
+            TapLog.add("OCR 建立题型：已确证到第 " + allowedLabelCount + " 项");
+        } else if (allowedLabelCount > 0) {
+            TapLog.add("保留已有题型判定（已确证到第 " + allowedLabelCount
+                    + " 项，来源=" + typeSourceName(typeSource) + "），OCR 结果不覆盖");
+        } else {
+            TapLog.add("OCR 只认出 " + ocr.size() + " 项，不足以确证题型，保守拒绝");
+        }
+
+        if (!isLabelAllowed(requested)) {
+            toast("当前题型没有 " + requested + " 项，已忽略");
             return;
         }
         Rect rect = ocr.get(requested);
@@ -1549,12 +1880,24 @@ public class QuadTapAccessibilityService extends AccessibilityService {
     // ---------------------------------------------------------------- 工具方法
 
     private void tap(float x, float y) {
+        // 最后一道关卡：停止后连已经走到这里的点击也不派发
+        if (!assistRunning) {
+            TapLog.add("已停止，忽略点击派发");
+            return;
+        }
         Path path = new Path();
         path.moveTo(x, y);
         GestureDescription.Builder builder = new GestureDescription.Builder();
         builder.addStroke(new GestureDescription.StrokeDescription(path, 0, 80));
         try {
-            dispatchGesture(builder.build(), null, null);
+            boolean dispatched = dispatchGesture(builder.build(), null, null);
+            if (dispatched) {
+                // 只有真正派发成功才计一次辅助答题，失败不计
+                prefs.setAnswerCount(prefs.answerCount() + 1);
+                TapLog.add("辅助答题 +1，累计 " + prefs.answerCount() + " 次");
+            } else {
+                TapLog.add("手势派发被系统拒绝，不计数");
+            }
         } catch (Exception e) {
             toast("点击派发失败");
         }

@@ -26,6 +26,9 @@ final class Prefs {
     private static final String K_AUTO_UPDATE = "auto_check_update";
     private static final String K_IGNORED_VERSION = "ignored_version";
     private static final String K_THEME_MODE = "theme_mode";
+    // 运行控制相关的独立新字段，不覆盖也不改变任何现有配置的键名与默认值
+    private static final String K_ANSWER_COUNT = "answer_count";
+    private static final String K_ASSIST_RUNNING = "assist_running";
 
     /** 主题：跟随系统 / 强制白天 / 强制黑夜。 */
     static final int THEME_SYSTEM = 0;
@@ -177,4 +180,19 @@ final class Prefs {
     }
 
     void setThemeMode(int mode) { sp.edit().putInt(K_THEME_MODE, mode).apply(); }
+
+    // ------------------------------------------------------------ 运行控制
+
+    /** 累计成功辅助答题次数。只在真正派发成功一次点击后 +1。 */
+    int answerCount() { return sp.getInt(K_ANSWER_COUNT, 0); }
+
+    void setAnswerCount(int value) { sp.edit().putInt(K_ANSWER_COUNT, Math.max(0, value)).apply(); }
+
+    /**
+     * 用户期望的辅助功能开关状态。
+     * 默认 true —— 保持原有「用户勾选无障碍后即可用」的行为，不改变既有体验。
+     */
+    boolean assistRunning() { return sp.getBoolean(K_ASSIST_RUNNING, true); }
+
+    void setAssistRunning(boolean value) { sp.edit().putBoolean(K_ASSIST_RUNNING, value).apply(); }
 }

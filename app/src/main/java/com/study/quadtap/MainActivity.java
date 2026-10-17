@@ -13,6 +13,9 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
@@ -77,7 +80,7 @@ public class MainActivity extends Activity {
     private void applyPalette(boolean dark) {
         darkTheme = dark;
         if (dark) {
-            COLOR_BG = 0xFF0F131A;
+            COLOR_BG = 0xFF000000;
             COLOR_CARD = 0xFF1A212B;
             COLOR_STROKE = 0xFF2B3542;
             COLOR_TITLE = 0xFFE9EEF7;
@@ -127,27 +130,74 @@ public class MainActivity extends Activity {
     }
 
     private Prefs prefs;
-    private TextView statusLine;
-    private TextView detailLine;
     private TextView appScopeLine;
     private TextView sizeLabel;
     private TextView logView;
     private TextView versionLine;
-    /** 状态卡片左侧的小圆点，颜色跟随服务状态。 */
-    private View statusDot;
+    /** 卡片 2 顶部的一行状态：已校准数量 / 上次识别数量 / 当前已确证选项数。 */
+    private TextView recognizeInfoText;
     /** 自动检查更新每次启动只做一次，避免每次回到前台都请求网络。 */
     private boolean autoCheckDone = false;
     /** 正在检查时不要被 refreshStatus 覆盖掉提示文字。 */
     private boolean checkingUpdate = false;
     private AlertDialog downloadDialog;
 
-    // 顶部选项卡：四个页面一次性建好，切换只改可见性
-    private LinearLayout tabBar;
-    private FrameLayout pageContainer;
-    private final List<View> pages = new ArrayList<View>();
-    private final List<TextView> tabLabels = new ArrayList<TextView>();
-    private final List<View> tabIndicators = new ArrayList<View>();
-    private int currentTab = 0;
+    // 第一张运行控制卡的实时读数
+    private TextView runStatusText;
+    private View runStatusDot;
+    private TextView runCountText;
+    private TextView runTimeText;
+    private TextView runStateText;
+    private TextView runHintText;
+    private Switch runSwitch;
+    /** 程序化改开关状态时抑制监听回调，避免与真实状态互相打断。 */
+    private boolean updatingRunSwitch = false;
+    /** 每秒刷新运行时长。 */
+    private final Handler tickHandler = new Handler(Looper.getMainLooper());
+    private final Runnable tickRunnable = new Runnable() {
+        @Override public void run() {
+            updateRunTime();
+            tickHandler.postDelayed(this, 1000);
+        }
+    };
+
+    // ---- 钱包式卡片配色（固定品牌色，不随深浅主题变化）----
+    private static final int CARD_BLUE = 0xFF1677FF;        // 卡片 1 运行控制
+    private static final int CARD_LIGHT_BLUE = 0xFFD8E9FF;  // 卡片 2 识别与校准
+    private static final int CARD_TEAL = 0xFF19C7C2;        // 卡片 3 运行日志
+    private static final int CARD_DEEP_BLUE = 0xFF2867F0;   // 卡片 4 应用设置
+
+    // 彩色卡片上的文字/按钮配色 —— 深色卡片一套，浅蓝卡片一套
+    private static final int ON_DARK_TITLE = 0xFFFFFFFF;
+    private static final int ON_DARK_TEXT = 0xFFE8F0FF;
+    private static final int ON_DARK_HINT = 0xFFC2D8FF;
+    private static final int ON_DARK_BTN = 0x33FFFFFF;
+    private static final int ON_DARK_BTN_PRESSED = 0x5CFFFFFF;
+    private static final int ON_DARK_STROKE = 0x33FFFFFF;
+
+    private static final int ON_LIGHT_TITLE = 0xFF0A1F3D;
+    private static final int ON_LIGHT_TEXT = 0xFF16324F;
+    private static final int ON_LIGHT_HINT = 0xFF4A6480;
+    private static final int ON_LIGHT_BTN = 0xFFFFFFFF;
+    private static final int ON_LIGHT_BTN_PRESSED = 0xFFD3E2F2;
+    private static final int ON_LIGHT_STROKE = 0x1F0A1F3D;
+
+    /**
+     * 把调色板切到某张卡片的配色。
+     * 之后的 card() / cardTitle() / hintText() / 各种按钮都会自动跟随，
+     * 因此原有那些 buildXxx 方法一行都不用改。
+     */
+    private void useCardStyle(int cardColor, boolean darkContent) {
+        COLOR_CARD = cardColor;
+        COLOR_STROKE = darkContent ? ON_DARK_STROKE : ON_LIGHT_STROKE;
+        COLOR_TITLE = darkContent ? ON_DARK_TITLE : ON_LIGHT_TITLE;
+        COLOR_TEXT = darkContent ? ON_DARK_TEXT : ON_LIGHT_TEXT;
+        COLOR_HINT = darkContent ? ON_DARK_HINT : ON_LIGHT_HINT;
+        COLOR_BTN_SECONDARY = darkContent ? ON_DARK_BTN : ON_LIGHT_BTN;
+        COLOR_BTN_PRESSED = darkContent ? ON_DARK_BTN_PRESSED : ON_LIGHT_BTN_PRESSED;
+        COLOR_ACCENT = darkContent ? ON_DARK_BTN : 0xFF1677FF;
+        COLOR_ACCENT_PRESSED = darkContent ? ON_DARK_BTN_PRESSED : 0xFF255FC9;
+    }
 
     private int dp(float value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
@@ -173,54 +223,26 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(COLOR_BG);
 
-        TextView appTitle = new TextView(this);
-        appTitle.setText(R.string.app_name);
-        appTitle.setTextSize(19);
-        appTitle.setTextColor(COLOR_TITLE);
-        appTitle.setTypeface(null, Typeface.BOLD);
-        appTitle.setPadding(dp(18), dp(16), dp(18), dp(10));
-        root.addView(appTitle, new LinearLayout.LayoutParams(-1, -2));
+        // 单页纵向滚动 + 卡片堆叠。没有选项卡、没有滑动切换、没有拖动排序。
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(COLOR_BG);
+        scroll.setFillViewport(true);
 
-        root.addView(buildTabBar(), new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setPadding(dp(20), dp(18), dp(20), dp(36));
+        scroll.addView(page);
 
-        // 选项卡下面一条细分隔线，让标题栏和内容区层次更清楚
-        View tabDivider = new View(this);
-        tabDivider.setBackgroundColor(COLOR_STROKE);
-        root.addView(tabDivider, new LinearLayout.LayoutParams(-1, Math.max(1, dp(1))));
+        buildRunCard(page);          // 卡片 1：运行控制（核心）
+        buildRecognitionArea(page);  // 卡片 2：识别与校准
+        buildLogArea(page);          // 卡片 3：运行日志
+        buildSettingsArea(page);     // 卡片 4：应用设置
 
-        pageContainer = new FrameLayout(this);
-        root.addView(pageContainer, new LinearLayout.LayoutParams(-1, 0, 1f));
-
-        // 状态
-        LinearLayout tabStatus = newPage();
-        buildHeader(tabStatus);
-        buildStatusCard(tabStatus);
-        buildUpdateCard(tabStatus);
-        buildFlowCard(tabStatus);
-        addPage("状态", tabStatus);
-
-        // 识别
-        LinearLayout tabRecognition = newPage();
-        buildScopeCard(tabRecognition);
-        buildRecognitionCard(tabRecognition);
-        buildPanelCard(tabRecognition);
-        addPage("识别", tabRecognition);
-
-        // 日志
-        LinearLayout tabLog = newPage();
-        buildLogCard(tabLog);
-        addPage("日志", tabLog);
-
-        // 设置（外观 / 技术 / 更新日志）
-        LinearLayout tabAbout = newPage();
-        buildAppearanceCard(tabAbout);
-        buildAboutCard(tabAbout);
-        buildFooter(tabAbout);
-        addPage("设置", tabAbout);
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         setContentView(root);
         applyWindowInsets(root);
-        selectTab(0);
+        refreshStatus();
     }
 
     /**
@@ -256,140 +278,262 @@ public class MainActivity extends Activity {
         page.addView(foot, topMargin(22));
     }
 
-    // ------------------------------------------------------------------ 顶部选项卡
+    // ------------------------------------------------------------------ 卡片容器
+    // 原「状态 / 识别 / 日志 / 设置」四个选项卡的导航已移除，
+    // 四个页面的功能全部迁移到下面四张卡片里。
 
-    private LinearLayout buildTabBar() {
-        tabBar = new LinearLayout(this);
-        tabBar.setOrientation(LinearLayout.HORIZONTAL);
-        tabBar.setBackgroundColor(COLOR_CARD);
-        tabBar.setPadding(dp(8), dp(6), dp(8), 0);
-        return tabBar;
+    /** 卡片 2：识别与校准（原「识别」页的识别开关 + 悬浮面板设置） */
+    private void buildRecognitionArea(LinearLayout page) {
+        useCardStyle(CARD_LIGHT_BLUE, false);
+        LinearLayout card = card();
+        card.addView(cardTitle("识别与校准"));
+
+        // 恢复原先在状态页里展示的校准/识别数量
+        recognizeInfoText = new TextView(this);
+        recognizeInfoText.setTextSize(12);
+        recognizeInfoText.setTextColor(COLOR_HINT);
+        recognizeInfoText.setLineSpacing(dp(3), 1f);
+        card.addView(recognizeInfoText, topMargin(6));
+
+        buildRecognitionSection(card);
+        buildPanelSection(card);
+        page.addView(card, topMargin(16));
     }
 
-    /** 新增一个选项卡 + 对应页面。页面先全部建好，切换只改可见性。 */
-    private void addPage(final String title, LinearLayout content) {
-        final int index = pages.size();
-
-        LinearLayout tab = new LinearLayout(this);
-        tab.setOrientation(LinearLayout.VERTICAL);
-        tab.setGravity(Gravity.CENTER);
-
-        TextView label = new TextView(this);
-        label.setText(title);
-        label.setTextSize(14);
-        label.setGravity(Gravity.CENTER);
-        label.setPadding(0, dp(10), 0, dp(8));
-        tab.addView(label, new LinearLayout.LayoutParams(-1, -2));
-
-        View indicator = new View(this);
-        LinearLayout.LayoutParams indicatorParams = new LinearLayout.LayoutParams(dp(22), dp(3));
-        indicatorParams.gravity = Gravity.CENTER_HORIZONTAL;
-        tab.addView(indicator, indicatorParams);
-
-        tab.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { selectTab(index); }
-        });
-
-        tabBar.addView(tab, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(COLOR_BG);
-        scroll.addView(content);
-        scroll.setVisibility(View.GONE);
-        pageContainer.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
-
-        pages.add(scroll);
-        tabLabels.add(label);
-        tabIndicators.add(indicator);
+    /** 卡片 3：运行日志（原「日志」页） */
+    private void buildLogArea(LinearLayout page) {
+        useCardStyle(CARD_TEAL, false);
+        LinearLayout card = card();
+        card.addView(cardTitle("运行日志"));
+        buildLogSection(card);
+        page.addView(card, topMargin(16));
     }
 
-    private void selectTab(int index) {
-        if (index < 0 || index >= pages.size()) return;
-        currentTab = index;
-        for (int i = 0; i < pages.size(); i++) {
-            boolean active = i == index;
-            pages.get(i).setVisibility(active ? View.VISIBLE : View.GONE);
-            tabLabels.get(i).setTextColor(active ? COLOR_ACCENT : COLOR_HINT);
-            tabLabels.get(i).setTypeface(null, active ? Typeface.BOLD : Typeface.NORMAL);
-            GradientDrawable bar = new GradientDrawable();
-            bar.setColor(active ? COLOR_ACCENT : 0x00000000);
-            bar.setCornerRadius(dp(2));
-            tabIndicators.get(i).setBackground(bar);
-        }
-        refreshStatus();
+    /** 卡片 4：应用设置（原「识别」页的应用限定 + 原「设置」页的外观/更新/关于） */
+    private void buildSettingsArea(LinearLayout page) {
+        useCardStyle(CARD_DEEP_BLUE, true);
+        LinearLayout card = card();
+        card.addView(cardTitle("应用设置"));
+        buildScopeSection(card);
+        buildAppearanceSection(card);
+        buildUpdateSection(card);
+        buildFlowSection(card);
+        buildAboutSection(card);
+        buildFooter(card);
+        page.addView(card, topMargin(16));
     }
 
     @Override protected void onResume() {
         super.onResume();
         refreshStatus();
+        startTicking();
         if (!autoCheckDone && prefs.autoCheckUpdate()) {
             autoCheckDone = true;
             checkForUpdate(false);
         }
     }
 
-    // ------------------------------------------------------------------ 各区块
-
-    private void buildHeader(LinearLayout page) {
-        // 应用名已经放在顶部常驻标题栏里，这里只留一句说明
-        TextView sub = new TextView(this);
-        sub.setText("把屏幕上的选项位置映射到固定的 A/B/C/D 四格悬浮面板。"
-                + "不判断答案，只在你主动点格子时点击对应选项。");
-        sub.setTextSize(13);
-        sub.setTextColor(COLOR_HINT);
-        sub.setLineSpacing(dp(4), 1f);
-        page.addView(sub);
+    @Override protected void onPause() {
+        super.onPause();
+        stopTicking();
     }
 
-    private void buildStatusCard(LinearLayout page) {
+    /** 运行时长的秒级刷新：只在界面前台时跑，不影响服务里的计时起点。 */
+    private void startTicking() {
+        tickHandler.removeCallbacks(tickRunnable);
+        tickHandler.post(tickRunnable);
+    }
+
+    private void stopTicking() {
+        tickHandler.removeCallbacks(tickRunnable);
+    }
+
+    // ------------------------------------------------------------------ 卡片 1：运行控制
+
+    private void buildRunCard(LinearLayout page) {
+        useCardStyle(CARD_BLUE, true);
+
         LinearLayout card = card();
+        card.setPadding(dp(20), dp(20), dp(20), dp(22));
 
-        // 状态圆点和文字放同一行，运行状态一眼可见
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
+        // 第一层：名称 + 真实状态
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
 
-        statusDot = new View(this);
-        row.addView(statusDot, new LinearLayout.LayoutParams(dp(9), dp(9)));
+        TextView name = new TextView(this);
+        name.setText("QuadTap");
+        name.setTextSize(20);
+        name.setTextColor(ON_DARK_TITLE);
+        name.setTypeface(null, Typeface.BOLD);
+        topRow.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        statusLine = new TextView(this);
-        statusLine.setTextSize(17);
-        statusLine.setTextColor(COLOR_TITLE);
-        statusLine.setTypeface(null, Typeface.BOLD);
-        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(0, -2, 1f);
-        statusParams.leftMargin = dp(9);
-        row.addView(statusLine, statusParams);
+        LinearLayout statusWrap = new LinearLayout(this);
+        statusWrap.setOrientation(LinearLayout.HORIZONTAL);
+        statusWrap.setGravity(Gravity.CENTER_VERTICAL);
+        runStatusDot = new View(this);
+        statusWrap.addView(runStatusDot, new LinearLayout.LayoutParams(dp(8), dp(8)));
+        runStatusText = new TextView(this);
+        runStatusText.setTextSize(13);
+        runStatusText.setTextColor(ON_DARK_TEXT);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(-2, -2);
+        statusParams.leftMargin = dp(6);
+        statusWrap.addView(runStatusText, statusParams);
+        topRow.addView(statusWrap);
+        card.addView(topRow);
 
-        card.addView(row);
+        // 第二层：辅助答题次数（卡内最醒目的数字）
+        TextView countLabel = new TextView(this);
+        countLabel.setText("辅助答题");
+        countLabel.setTextSize(12);
+        countLabel.setTextColor(ON_DARK_HINT);
+        card.addView(countLabel, topMargin(20));
 
-        detailLine = new TextView(this);
-        detailLine.setTextSize(13);
-        detailLine.setTextColor(COLOR_HINT);
-        detailLine.setLineSpacing(dp(5), 1f);
-        card.addView(detailLine, topMargin(8));
+        runCountText = new TextView(this);
+        runCountText.setTextSize(34);
+        runCountText.setTextColor(ON_DARK_TITLE);
+        runCountText.setTypeface(null, Typeface.BOLD);
+        card.addView(runCountText, topMargin(2));
 
-        Button enable = primaryButton("开启无障碍服务");
-        card.addView(enable, topMarginSized(16, 48));
-        enable.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { openAccessibilitySettings(); }
+        // 第三层：运行时长 / 服务状态
+        LinearLayout blocks = new LinearLayout(this);
+        blocks.setOrientation(LinearLayout.HORIZONTAL);
+
+        LinearLayout timeBlock = infoBlock();
+        timeBlock.addView(blockLabel("运行时长"));
+        runTimeText = blockValue("00:00:00");
+        timeBlock.addView(runTimeText);
+        blocks.addView(timeBlock, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        LinearLayout stateBlock = infoBlock();
+        stateBlock.addView(blockLabel("服务状态"));
+        runStateText = blockValue("已停止");
+        stateBlock.addView(runStateText);
+        LinearLayout.LayoutParams stateBlockParams = new LinearLayout.LayoutParams(0, -2, 1f);
+        stateBlockParams.leftMargin = dp(10);
+        blocks.addView(stateBlock, stateBlockParams);
+
+        card.addView(blocks, topMargin(18));
+
+        // 第四层：服务控制开关
+        LinearLayout control = new LinearLayout(this);
+        control.setOrientation(LinearLayout.HORIZONTAL);
+        control.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView controlLabel = new TextView(this);
+        controlLabel.setText("服务控制");
+        controlLabel.setTextSize(14);
+        controlLabel.setTextColor(ON_DARK_TEXT);
+        control.addView(controlLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        runSwitch = new Switch(this);
+        runSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                if (updatingRunSwitch) return;
+                onRunSwitchChanged(isChecked);
+            }
         });
+        control.addView(runSwitch);
+        card.addView(control, topMargin(18));
 
-        page.addView(card, topMargin(16));
+        // 权限提示 / 错误信息
+        runHintText = new TextView(this);
+        runHintText.setTextSize(12);
+        runHintText.setTextColor(ON_DARK_HINT);
+        runHintText.setLineSpacing(dp(4), 1f);
+        card.addView(runHintText, topMargin(10));
+
+        page.addView(card);
     }
 
-    /** 状态圆点用纯色圆形，不引入额外 drawable 资源。 */
-    private void setStatusDot(int color) {
-        if (statusDot == null) return;
+    /** 卡内半透明信息块（运行时长 / 服务状态）。 */
+    private LinearLayout infoBlock() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(12), dp(10), dp(12), dp(10));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(0x26FFFFFF);
+        background.setCornerRadius(dp(14));
+        box.setBackground(background);
+        return box;
+    }
+
+    private TextView blockLabel(String text) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(11);
+        view.setTextColor(ON_DARK_HINT);
+        return view;
+    }
+
+    private TextView blockValue(String text) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(16);
+        view.setTextColor(ON_DARK_TITLE);
+        view.setTypeface(null, Typeface.BOLD);
+        return view;
+    }
+
+    /** 开关回调：只有用户操作才会走到这里，触发真实启停。 */
+    private void onRunSwitchChanged(boolean wantOn) {
+        if (wantOn) {
+            if (!isAccessibilityEnabled()) {
+                // 权限没开时绝不伪造运行状态，引导用户去系统设置
+                setRunSwitchSilently(false);
+                Toast.makeText(this, "请先开启无障碍权限", Toast.LENGTH_SHORT).show();
+                openAccessibilitySettings();
+                refreshStatus();
+                return;
+            }
+            prefs.setAssistRunning(true);
+            QuadTapAccessibilityService.applyAssistRunningFromPrefs();
+        } else {
+            prefs.setAssistRunning(false);
+            QuadTapAccessibilityService.applyAssistRunningFromPrefs();
+        }
+        refreshStatus();
+    }
+
+    private void setRunSwitchSilently(boolean checked) {
+        if (runSwitch == null) return;
+        updatingRunSwitch = true;
+        runSwitch.setChecked(checked);
+        updatingRunSwitch = false;
+    }
+
+    private void setRunDot(int color) {
+        if (runStatusDot == null) return;
         GradientDrawable dot = new GradientDrawable();
         dot.setShape(GradientDrawable.OVAL);
         dot.setColor(color);
-        statusDot.setBackground(dot);
+        runStatusDot.setBackground(dot);
+    }
+
+    /** 运行时长只在真正运行时累加；停止后显示 00:00:00。 */
+    private void updateRunTime() {
+        if (runTimeText == null) return;
+        long startedAt = QuadTapAccessibilityService.runStartedAt();
+        if (!QuadTapAccessibilityService.isAssistRunning() || startedAt <= 0L) {
+            runTimeText.setText("00:00:00");
+            return;
+        }
+        long seconds = (SystemClock.elapsedRealtime() - startedAt) / 1000L;
+        if (seconds < 0) seconds = 0;
+        runTimeText.setText(formatDuration(seconds));
+    }
+
+    /** HH:MM:SS，小时允许超过 24。 */
+    private static String formatDuration(long totalSeconds) {
+        long hours = totalSeconds / 3600L;
+        long minutes = (totalSeconds % 3600L) / 60L;
+        long seconds = totalSeconds % 60L;
+        return String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds);
     }
 
     // ------------------------------------------------------------------ 版本与更新
 
-    private void buildUpdateCard(LinearLayout page) {
-        LinearLayout card = card();
+    private void buildUpdateSection(LinearLayout card) {
         card.addView(cardTitle("版本与更新"));
 
         versionLine = new TextView(this);
@@ -420,7 +564,6 @@ public class MainActivity extends Activity {
                 + "Android 不允许应用静默安装，所以最后一定会弹一次系统确认框；"
                 + "第一次使用还需要在系统设置里允许本应用安装未知应用。"), topMargin(0));
 
-        page.addView(card, topMargin(12));
     }
 
     private String versionSummary() {
@@ -596,9 +739,9 @@ public class MainActivity extends Activity {
         Toast.makeText(this, text, Toast.LENGTH_SHORT).show();
     }
 
-    private void buildFlowCard(LinearLayout page) {
-        LinearLayout card = card();
-        card.addView(cardTitle("操作流程"));
+    private void buildFlowSection(LinearLayout container) {
+        LinearLayout card = container;
+        card.addView(sectionTitle("操作流程"));
 
         String[][] steps = {
                 {"1", "开启无障碍服务", "系统设置里勾选「四格自动校准」"},
@@ -634,12 +777,12 @@ public class MainActivity extends Activity {
 
             card.addView(row, topMargin(10));
         }
-        page.addView(card, topMargin(12));
+
     }
 
-    private void buildScopeCard(LinearLayout page) {
-        LinearLayout card = card();
-        card.addView(cardTitle("限定显示的应用"));
+    private void buildScopeSection(LinearLayout container) {
+        LinearLayout card = container;
+        card.addView(sectionTitle("限定显示的应用"));
 
         TextView hint = hintText("默认在所有应用上都显示。选定应用后，面板只在那些应用位于前台时出现，"
                 + "切到其它应用会被真正移除（不是变透明），既不遮挡也不会抢触摸。");
@@ -666,12 +809,12 @@ public class MainActivity extends Activity {
         }), flexParams(dp(8)));
         card.addView(buttons, topMargin(12));
 
-        page.addView(card, topMargin(12));
+
     }
 
-    private void buildRecognitionCard(LinearLayout page) {
-        LinearLayout card = card();
-        card.addView(cardTitle("识别选项"));
+    private void buildRecognitionSection(LinearLayout container) {
+        LinearLayout card = container;
+        card.addView(sectionTitle("识别选项"));
 
         Switch ocr = toggle("启用 OCR 回退（Android 11 及以上）", prefs.useOcr());
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
@@ -712,12 +855,12 @@ public class MainActivity extends Activity {
             }
         });
 
-        page.addView(card, topMargin(12));
+
     }
 
-    private void buildPanelCard(LinearLayout page) {
-        LinearLayout card = card();
-        card.addView(cardTitle("悬浮面板"));
+    private void buildPanelSection(LinearLayout container) {
+        LinearLayout card = container;
+        card.addView(sectionTitle("悬浮面板"));
 
         sizeLabel = new TextView(this);
         sizeLabel.setTextSize(13);
@@ -770,10 +913,10 @@ public class MainActivity extends Activity {
                 + "只重置位置和大小，已校准的选项坐标和开关都不受影响。");
         card.addView(resetHint, topMargin(6));
 
-        page.addView(card, topMargin(12));
+
     }
 
-    private void buildLogCard(LinearLayout page) {
+    private void buildLogSection(LinearLayout container) {
         CollapsibleCard section = new CollapsibleCard("诊断日志", false);
 
         section.content.addView(hintText("每次点击悬浮格都会记录当次扫描的完整节点树、候选评分和判定过程。"
@@ -823,12 +966,12 @@ public class MainActivity extends Activity {
         }), flexParams(dp(8)));
         section.content.addView(buttons, topMargin(10));
 
-        page.addView(section.root, topMargin(12));
+        container.addView(section.root, topMargin(12));
     }
 
-    private void buildAppearanceCard(LinearLayout page) {
-        LinearLayout card = card();
-        card.addView(cardTitle("外观"));
+    private void buildAppearanceSection(LinearLayout container) {
+        LinearLayout card = container;
+        card.addView(sectionTitle("外观"));
         card.addView(hintText("选「跟随系统」时会随系统的深色模式自动切换。修改后界面会立即重建。"),
                 topMargin(6));
 
@@ -864,10 +1007,10 @@ public class MainActivity extends Activity {
         });
         card.addView(group);
 
-        page.addView(card, topMargin(12));
+
     }
 
-    private void buildAboutCard(LinearLayout page) {
+    private void buildAboutSection(LinearLayout container) {
         LinearLayout tech = card();
         tech.addView(cardTitle("使用的技术"));
         tech.addView(hintText(
@@ -880,7 +1023,7 @@ public class MainActivity extends Activity {
                 + "· SharedPreferences 保存设置与校准坐标\n"
                 + "· 界面全部用原生 View 以代码构建，没有引入第三方 UI 框架\n"
                 + "· 未申请 QUERY_ALL_PACKAGES，只用 <queries> 列出可启动的应用"), topMargin(8));
-        page.addView(tech, topMargin(12));
+        container.addView(tech, topMargin(12));
 
         CollapsibleCard log = new CollapsibleCard("完整更新日志", false);
         log.content.addView(hintText(
@@ -913,43 +1056,15 @@ public class MainActivity extends Activity {
                 + "V1.1\n"
                 + "· 修复截屏能力位、硬件位图、选项匹配三处致命缺陷\n"
                 + "· 新增可拖动吸附面板、长按手动校准、定位范围可视化"), topMargin(8));
-        page.addView(log.root, topMargin(12));
+        container.addView(log.root, topMargin(12));
     }
 
     // ------------------------------------------------------------------ 状态刷新
 
     private void refreshStatus() {
         refreshLog();
-        if (statusLine == null) return;
-
-        boolean enabled = isAccessibilityEnabled();
-        QuadTapAccessibilityService service = QuadTapAccessibilityService.get();
-        boolean connected = service != null;
-
-        if (connected) {
-            statusLine.setText("服务运行中");
-            statusLine.setTextColor(COLOR_OK);
-            setStatusDot(COLOR_OK);
-        } else if (enabled) {
-            statusLine.setText("服务已开启，但尚未连接");
-            statusLine.setTextColor(COLOR_WARN);
-            setStatusDot(COLOR_WARN);
-        } else {
-            statusLine.setText("服务未开启");
-            statusLine.setTextColor(COLOR_BAD);
-            setStatusDot(COLOR_BAD);
-        }
-
-        StringBuilder detail = new StringBuilder();
-        detail.append("已校准选项：").append(prefs.learnedCount()).append("/4");
-        detail.append("　·　方块大小：").append(prefs.cellSizeDp()).append("dp");
-        if (connected) {
-            detail.append("\n上次扫描识别到：").append(service.lastFoundCount()).append(" 个选项");
-        }
-        if (!enabled) {
-            detail.append("\n请先开启无障碍服务，面板才会出现。");
-        }
-        detailLine.setText(detail.toString());
+        // 运行控制卡：状态、开关、答题数、时长全部来自真实服务状态，不看开关外观
+        refreshRunCard();
 
         if (appScopeLine != null) {
             Set<String> allowed = prefs.allowedPackages();
@@ -961,7 +1076,72 @@ public class MainActivity extends Activity {
             }
         }
         if (sizeLabel != null) updateSizeLabel(prefs.cellSizeDp());
+
+        // 恢复原有的校准 / 识别数量展示（复用现有 getter，不新增数据源）
+        if (recognizeInfoText != null) {
+            int confirmed = QuadTapAccessibilityService.allowedLabelCount();
+            QuadTapAccessibilityService service = QuadTapAccessibilityService.get();
+            StringBuilder info = new StringBuilder();
+            info.append("已校准选项 ").append(prefs.learnedCount()).append("/4");
+            if (service != null) {
+                info.append("　·　上次识别 ").append(service.lastFoundCount()).append(" 项");
+                info.append("　·　当前已确证 ")
+                        .append(confirmed > 0 ? confirmed + " 项(A–" + "ABCD".charAt(confirmed - 1) + ")" : "未知");
+            } else {
+                info.append("　·　服务未连接");
+            }
+            recognizeInfoText.setText(info.toString());
+        }
+
         if (versionLine != null && !checkingUpdate) versionLine.setText(versionSummary());
+    }
+
+    /**
+     * 刷新运行控制卡的四类信息：辅助答题数、运行时长、真实状态、开关位置。
+     * 状态严格区分：运行中 / 已停止 / 需要无障碍权限 / 权限已开但服务未连接。
+     */
+    private void refreshRunCard() {
+        if (runStatusText == null) return;
+
+        boolean accessEnabled = isAccessibilityEnabled();
+        boolean connected = QuadTapAccessibilityService.get() != null;
+        boolean running = QuadTapAccessibilityService.isAssistRunning();
+
+        String status;
+        String stateLabel;
+        String hint;
+        int dotColor;
+
+        if (!accessEnabled) {
+            status = "需要开启无障碍权限";
+            stateLabel = "权限未开启";
+            dotColor = 0xFFFFC24B;
+            hint = "点开关会跳到系统设置，请开启「" + getString(R.string.app_name)
+                    + "」的无障碍服务后再回来。";
+        } else if (!connected) {
+            status = "已停止";
+            stateLabel = "服务未连接";
+            dotColor = 0xFFC2D8FF;
+            hint = "无障碍已勾选但服务还没连上。稍等片刻，或在系统设置里重新开关一次。";
+        } else if (running) {
+            status = "运行中";
+            stateLabel = "运行中";
+            dotColor = 0xFF5BE39B;
+            hint = "面板已就绪：点击格子定位，长按格子手动校准。";
+        } else {
+            status = "已停止";
+            stateLabel = "已停止";
+            dotColor = 0xFFC2D8FF;
+            hint = "辅助答题已停止，不会再执行任何点击。打开开关即可恢复。";
+        }
+
+        runStatusText.setText(status);
+        setRunDot(dotColor);
+        runStateText.setText(stateLabel);
+        runCountText.setText(prefs.answerCount() + " 道");
+        runHintText.setText(hint);
+        setRunSwitchSilently(running);
+        updateRunTime();
     }
 
     private void updateSizeLabel(int value) {
@@ -1155,6 +1335,17 @@ public class MainActivity extends Activity {
         view.setTextSize(15);
         view.setTextColor(COLOR_TITLE);
         view.setTypeface(null, Typeface.BOLD);
+        return view;
+    }
+
+    /** 卡片内部的小节标题，视觉层级比卡片标题低一级。 */
+    private TextView sectionTitle(String text) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(13);
+        view.setTextColor(COLOR_TITLE);
+        view.setTypeface(null, Typeface.BOLD);
+        view.setLetterSpacing(0.02f);
         return view;
     }
 
