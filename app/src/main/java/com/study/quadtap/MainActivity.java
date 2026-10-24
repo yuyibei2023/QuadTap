@@ -185,6 +185,10 @@ public class MainActivity extends Activity {
     private TextView runStateText;
     private TextView runHintText;
     private Switch runSwitch;
+    /** 权限未开启时显示的「去开启无障碍」按钮。 */
+    private Button accessibilityButton;
+    /** 答题统计卡片里的一行汇总文字。 */
+    private TextView statsText;
     /** 程序化改开关状态时抑制监听回调，避免与真实状态互相打断。 */
     private boolean updatingRunSwitch = false;
     /** 每秒刷新运行时长。 */
@@ -647,6 +651,7 @@ public class MainActivity extends Activity {
         card.addView(cardTitle("应用设置"));
         buildScopeSection(card);
         buildAppearanceSection(card);
+        buildStatsSection(card);
         buildUpdateSection(card);
         buildFlowSection(card);
         buildAboutSection(card);
@@ -776,6 +781,14 @@ public class MainActivity extends Activity {
         runHintText.setLineSpacing(dp(4), 1f);
         card.addView(runHintText, topMargin(10));
 
+        // 权限未开启时才显示的跳转按钮（平时隐藏），给首页一个明确的入口
+        accessibilityButton = primaryButton("去开启无障碍服务");
+        accessibilityButton.setVisibility(View.GONE);
+        accessibilityButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { openAccessibilitySettings(); }
+        });
+        card.addView(accessibilityButton, topMargin(10));
+
         page.addView(card);
     }
 
@@ -812,10 +825,9 @@ public class MainActivity extends Activity {
     private void onRunSwitchChanged(boolean wantOn) {
         if (wantOn) {
             if (!isAccessibilityEnabled()) {
-                // 权限没开时绝不伪造运行状态，引导用户去系统设置
+                // 权限没开时绝不伪造运行状态，弹窗询问是否去系统设置开启
                 setRunSwitchSilently(false);
-                Toast.makeText(this, "请先开启无障碍权限", Toast.LENGTH_SHORT).show();
-                openAccessibilitySettings();
+                showAccessibilityDialog();
                 refreshStatus();
                 return;
             }
@@ -826,6 +838,23 @@ public class MainActivity extends Activity {
             QuadTapAccessibilityService.applyAssistRunningFromPrefs();
         }
         refreshStatus();
+    }
+
+    /** 无障碍未开启时的弹窗：询问用户是否跳转到系统设置（而不是直接跳过去）。 */
+    private void showAccessibilityDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("无障碍服务未开启")
+                .setMessage("「" + getString(R.string.app_name) + "」的无障碍服务还没开启，"
+                        + "无法读取屏幕上的选项位置，也就没法辅助答题。\n\n"
+                        + "是否前往系统设置开启？开启后回到本页，再打开开关即可。")
+                .setPositiveButton("去开启", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        openAccessibilitySettings();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .setCancelable(true)
+                .show();
     }
 
     private void setRunSwitchSilently(boolean checked) {
@@ -1415,6 +1444,79 @@ public class MainActivity extends Activity {
 
     }
 
+    /** 答题统计卡片：题型数量、对错、连续天数，外加颜色识别开关与重置。 */
+    private void buildStatsSection(LinearLayout container) {
+        CollapsibleCard section = new CollapsibleCard("答题统计", true);
+
+        statsText = new TextView(this);
+        statsText.setTextSize(14);
+        statsText.setTextColor(COLOR_TEXT);
+        statsText.setLineSpacing(dp(4), 1f);
+        section.content.addView(statsText, topMargin(4));
+
+        Switch color = toggle("颜色识别判定对错（截图取色，较慢）", prefs.colorCheck());
+        color.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.setColorCheck(isChecked);
+            }
+        });
+        section.content.addView(color, topMargin(8));
+
+        section.content.addView(hintText("默认只靠「答对自动跳题、题面变化」判定对错。"
+                + "某些题库答错后也会弹出带文字的解析，可能被误判成答对；"
+                + "打开上面的开关会用截图识别红/绿来复核，但更慢，且色值阈值未在真机校准。"),
+                topMargin(0));
+
+        Button reset = secondaryButton("重置统计");
+        reset.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { confirmResetStats(); }
+        });
+        section.content.addView(reset, topMargin(10));
+
+        container.addView(section.root, topMargin(12));
+        refreshStats();
+    }
+
+    private void confirmResetStats() {
+        new AlertDialog.Builder(this)
+                .setTitle("重置答题统计")
+                .setMessage("将清空累计答题数、正确率、题型统计和连续天数，且无法恢复。确定吗？")
+                .setPositiveButton("重置", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        prefs.resetStats();
+                        refreshStats();
+                        Toast.makeText(MainActivity.this, "统计已重置", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void refreshStats() {
+        if (statsText == null) return;
+        int total = prefs.statTotal();
+        int correct = prefs.statCorrect();
+        int wrong = prefs.statWrong();
+        int single = prefs.statSingle();
+        int singleCorrect = prefs.statSingleCorrect();
+        int judge = prefs.statJudge();
+        int judgeCorrect = prefs.statJudgeCorrect();
+        int streak = prefs.statStreak();
+        int judged = correct + wrong;
+        int accuracy = judged > 0 ? Math.round(correct * 100f / judged) : 0;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("累计答题 ").append(total).append(" 道");
+        if (judged > 0) {
+            sb.append("　·　正确 ").append(correct)
+              .append("　正确率 ").append(accuracy).append("%");
+        }
+        sb.append("\n单选题 ").append(singleCorrect).append("/").append(single)
+          .append("　判断题 ").append(judgeCorrect).append("/").append(judge);
+        sb.append("\n连续答题 ").append(streak).append(" 天");
+        statsText.setText(sb.toString());
+    }
+
     private void buildAboutSection(LinearLayout container) {
         LinearLayout tech = card();
         tech.addView(cardTitle("使用的技术"));
@@ -1470,6 +1572,8 @@ public class MainActivity extends Activity {
         refreshLog();
         // 运行控制卡：状态、开关、答题数、时长全部来自真实服务状态，不看开关外观
         refreshRunCard();
+        // 答题统计卡片
+        refreshStats();
 
         if (appScopeLine != null) {
             Set<String> allowed = prefs.allowedPackages();
@@ -1521,8 +1625,8 @@ public class MainActivity extends Activity {
             status = "需要开启无障碍权限";
             stateLabel = "权限未开启";
             dotColor = 0xFFFFC24B;
-            hint = "点开关会跳到系统设置，请开启「" + getString(R.string.app_name)
-                    + "」的无障碍服务后再回来。";
+            hint = "点开关会弹窗询问，或直接点下方按钮，去系统设置开启「"
+                    + getString(R.string.app_name) + "」的无障碍服务。";
         } else if (!connected) {
             status = "已停止";
             stateLabel = "服务未连接";
@@ -1545,6 +1649,10 @@ public class MainActivity extends Activity {
         runStateText.setText(stateLabel);
         runCountText.setText(prefs.answerCount() + " 道");
         runHintText.setText(hint);
+        // 权限未开启时显示「去开启无障碍」按钮，开启后隐藏
+        if (accessibilityButton != null) {
+            accessibilityButton.setVisibility(accessEnabled ? View.GONE : View.VISIBLE);
+        }
         setRunSwitchSilently(running);
         updateRunTime();
     }

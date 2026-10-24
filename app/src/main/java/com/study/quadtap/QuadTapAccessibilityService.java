@@ -1895,12 +1895,171 @@ public class QuadTapAccessibilityService extends AccessibilityService {
                 // 只有真正派发成功才计一次辅助答题，失败不计
                 prefs.setAnswerCount(prefs.answerCount() + 1);
                 TapLog.add("辅助答题 +1，累计 " + prefs.answerCount() + " 次");
+                // 点击成功后再观察目标应用的反馈，判定这题对不对（见 scheduleAnswerCheck）
+                scheduleAnswerCheck(x, y);
             } else {
                 TapLog.add("手势派发被系统拒绝，不计数");
             }
         } catch (Exception e) {
             toast("点击派发失败");
         }
+    }
+
+    /**
+     * 点击派发成功后，延迟一会儿重扫题面，判断是否「答对自动跳题」。
+     *
+     * 关键：不自己判对错，只观察目标应用给出的反馈 ——
+     * 题库答对会自动跳到下一题（题面文本随之变化）；答错停在原题（题面不变）。
+     * 因此「题面指纹变化」≈ 答对。颜色识别是可选增强，默认关闭。
+     */
+    private void scheduleAnswerCheck(final float x, final float y) {
+        // 点击前立刻抓题面指纹：此刻手势刚派发，目标应用还没判分，题面仍是原题。
+        final String beforeFingerprint = questionFingerprint();
+        // 题型快照：typeSource 在重扫后会被更新，必须先存下来。
+        final boolean isJudge = (typeSource == TYPE_JUDGE);
+
+        handler.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (!assistRunning) return;   // 期间停止了，不再统计
+                String afterFingerprint = questionFingerprint();
+                boolean advanced = !beforeFingerprint.isEmpty()
+                        && !beforeFingerprint.equals(afterFingerprint);
+                if (advanced) {
+                    prefs.recordAnswer(isJudge, 1);
+                    TapLog.add("统计: 题面已变化 -> 判定答对（"
+                            + (isJudge ? "判断" : "单选") + "题）");
+                } else if (prefs.colorCheck()) {
+                    judgeByColor(isJudge, x, y);
+                } else {
+                    prefs.recordAnswer(isJudge, 0);
+                    TapLog.add("统计: 题面未变化，颜色识别已关闭 -> 记未知（"
+                            + (isJudge ? "判断" : "单选") + "题）");
+                }
+            }
+        }, 1200);
+    }
+
+    /**
+     * 抓当前活动窗口的「题面指纹」：把窗口内所有短文本按遍历顺序拼接。
+     * 跳题后题面与选项文本都会变，指纹随之变化；答错时文本不变（只是颜色变红），
+     * 指纹不变。单个文本截断到 120 字符，既覆盖长题干，又不被整段解析拖累。
+     *
+     * 已知局限：如果某个题库答错后会弹出带文字的解析面板（且题面不变），
+     * 指纹也可能变化从而误判成答对 —— 这正是「颜色识别」开关想补的场景。
+     */
+    private String questionFingerprint() {
+        StringBuilder sb = new StringBuilder();
+        try {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null) collectFingerprintText(root, 0, sb);
+        } catch (Exception ignored) { }
+        return sb.toString();
+    }
+
+    private void collectFingerprintText(AccessibilityNodeInfo node, int depth, StringBuilder sb) {
+        if (node == null || depth > 40) return;
+        try {
+            if (isOwnNode(node)) return;
+            CharSequence text = node.getText();
+            if (text != null && text.length() > 0) {
+                String raw = text.toString().trim();
+                if (!raw.isEmpty()) {
+                    String shown = raw.length() > 120 ? raw.substring(0, 120) : raw;
+                    sb.append(shown).append('\n');
+                }
+            }
+            int count = node.getChildCount();
+            for (int i = 0; i < count; i++) {
+                collectFingerprintText(node.getChild(i), depth + 1, sb);
+            }
+        } catch (Exception ignored) {
+            // 节点可能在遍历中失效，跳过即可。
+        }
+    }
+
+    /**
+     * 颜色识别判定：截图后在点击坐标附近采样，判断该选项变绿（对）还是变红（错）。
+     * 慢速可选路径，开关默认关闭。色值阈值未经真机校准，仅供打开开关的用户试用。
+     */
+    @TargetApi(Build.VERSION_CODES.R)
+    private void judgeByColor(final boolean isJudge, final float x, final float y) {
+        TapLog.add("统计: 题面未变化，走颜色识别");
+        // 截图会把悬浮面板一并截进去，先收起，结束后恢复。
+        setOverlaysVisible(false);
+        try {
+            takeScreenshot(Display.DEFAULT_DISPLAY, worker, new TakeScreenshotCallback() {
+                @Override public void onSuccess(ScreenshotResult result) {
+                    Bitmap bitmap = null;
+                    try {
+                        bitmap = toSoftwareBitmap(result);
+                        if (bitmap == null) {
+                            TapLog.add("统计: 颜色识别截图转换失败，记未知");
+                            prefs.recordAnswer(isJudge, 0);
+                            return;
+                        }
+                        int verdict = sampleVerdict(bitmap, x, y);
+                        recycleQuietly(bitmap);
+                        prefs.recordAnswer(isJudge, verdict);
+                        TapLog.add("统计: 颜色识别 -> "
+                                + (verdict == 1 ? "答对" : verdict == -1 ? "答错" : "未知")
+                                + "（" + (isJudge ? "判断" : "单选") + "题）");
+                    } catch (Throwable t) {
+                        TapLog.add("统计: 颜色识别异常 " + t);
+                        recycleQuietly(bitmap);
+                        prefs.recordAnswer(isJudge, 0);
+                    } finally {
+                        restoreOverlaysAfterColorCheck();
+                    }
+                }
+
+                @Override public void onFailure(int errorCode) {
+                    TapLog.add("统计: 颜色识别截屏失败 " + errorCode);
+                    prefs.recordAnswer(isJudge, 0);
+                    restoreOverlaysAfterColorCheck();
+                }
+            });
+        } catch (Throwable t) {
+            TapLog.add("统计: 颜色识别截屏抛异常 " + t);
+            prefs.recordAnswer(isJudge, 0);
+            restoreOverlaysAfterColorCheck();
+        }
+    }
+
+    private void restoreOverlaysAfterColorCheck() {
+        handler.post(new Runnable() {
+            @Override public void run() {
+                if (assistRunning) setOverlaysVisible(true);
+            }
+        });
+    }
+
+    /** 在 (x,y) 附近采样像素，判绿=1 / 红=-1 / 其他=0。 */
+    private int sampleVerdict(Bitmap bitmap, float x, float y) {
+        if (bitmap == null) return 0;
+        int cx = (int) x;
+        int cy = (int) y;
+        int radius = Math.max(12, (int) (screenSize().y * 0.02f));
+        int green = 0;
+        int red = 0;
+        int sampled = 0;
+        for (int dy = -radius; dy <= radius; dy += 3) {
+            for (int dx = -radius; dx <= radius; dx += 3) {
+                int px = cx + dx;
+                int py = cy + dy;
+                if (px < 0 || py < 0 || px >= bitmap.getWidth() || py >= bitmap.getHeight()) continue;
+                int color = bitmap.getPixel(px, py);
+                int r = (color >> 16) & 0xFF;
+                int g = (color >> 8) & 0xFF;
+                int b = color & 0xFF;
+                sampled++;
+                if (g > r + 40 && g > b + 40) green++;
+                else if (r > g + 40 && r > b + 40) red++;
+            }
+        }
+        if (sampled == 0) return 0;
+        if (green > sampled * 0.30f) return 1;
+        if (red > sampled * 0.30f) return -1;
+        return 0;
     }
 
     /** 缓存屏幕尺寸：拖动面板时每个 MOVE 事件都会用到，避免反复调用 getRealSize。 */

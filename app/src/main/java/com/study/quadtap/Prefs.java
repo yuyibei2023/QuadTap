@@ -3,6 +3,7 @@ package com.study.quadtap;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import java.time.LocalDate;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
@@ -29,6 +30,19 @@ final class Prefs {
     // 运行控制相关的独立新字段，不覆盖也不改变任何现有配置的键名与默认值
     private static final String K_ANSWER_COUNT = "answer_count";
     private static final String K_ASSIST_RUNNING = "assist_running";
+
+    // ---- 答题统计：题型数量、对错、连续天数。独立字段，不引入 JSON 依赖 ----
+    private static final String K_STAT_TOTAL = "stat_total";
+    private static final String K_STAT_CORRECT = "stat_correct";
+    private static final String K_STAT_WRONG = "stat_wrong";
+    private static final String K_STAT_SINGLE = "stat_single";
+    private static final String K_STAT_SINGLE_CORRECT = "stat_single_correct";
+    private static final String K_STAT_JUDGE = "stat_judge";
+    private static final String K_STAT_JUDGE_CORRECT = "stat_judge_correct";
+    private static final String K_STAT_LAST_DAY = "stat_last_day";
+    private static final String K_STAT_STREAK = "stat_streak";
+    // 颜色识别判定对错（截图取色，较慢，默认关闭）
+    private static final String K_COLOR_CHECK = "color_check";
 
     /** 主题：跟随系统 / 强制白天 / 强制黑夜。 */
     static final int THEME_SYSTEM = 0;
@@ -195,4 +209,73 @@ final class Prefs {
     boolean assistRunning() { return sp.getBoolean(K_ASSIST_RUNNING, true); }
 
     void setAssistRunning(boolean value) { sp.edit().putBoolean(K_ASSIST_RUNNING, value).apply(); }
+
+    // ------------------------------------------------------------ 答题统计
+
+    int statTotal() { return sp.getInt(K_STAT_TOTAL, 0); }
+
+    int statCorrect() { return sp.getInt(K_STAT_CORRECT, 0); }
+
+    int statWrong() { return sp.getInt(K_STAT_WRONG, 0); }
+
+    int statSingle() { return sp.getInt(K_STAT_SINGLE, 0); }
+
+    int statSingleCorrect() { return sp.getInt(K_STAT_SINGLE_CORRECT, 0); }
+
+    int statJudge() { return sp.getInt(K_STAT_JUDGE, 0); }
+
+    int statJudgeCorrect() { return sp.getInt(K_STAT_JUDGE_CORRECT, 0); }
+
+    int statStreak() { return sp.getInt(K_STAT_STREAK, 0); }
+
+    /** 是否用截图取色来判定答对/答错（较慢，默认关闭）。 */
+    boolean colorCheck() { return sp.getBoolean(K_COLOR_CHECK, false); }
+
+    void setColorCheck(boolean value) { sp.edit().putBoolean(K_COLOR_CHECK, value).apply(); }
+
+    /**
+     * 记录一次答题。
+     *
+     * @param isJudge 是否判断题（true=判断题，false=单选题）。题型来自识别时的 typeSource。
+     * @param result  对错判定：1=正确、0=未知（未能判定）、-1=错误。
+     *                不管对错，只要确实派发了一次点击，就计入总题数与对应题型数。
+     */
+    void recordAnswer(boolean isJudge, int result) {
+        long today = LocalDate.now().toEpochDay();
+        long lastDay = sp.getLong(K_STAT_LAST_DAY, -1L);
+        int streak = statStreak();
+        int newStreak;
+        if (lastDay == today) {
+            newStreak = streak;                       // 同一天多次答题，连续天数不变
+        } else if (lastDay == today - 1) {
+            newStreak = streak + 1;                   // 昨天也答过，连续
+        } else {
+            newStreak = 1;                            // 断档，从今天重新起算
+        }
+
+        SharedPreferences.Editor editor = sp.edit();
+        editor.putInt(K_STAT_TOTAL, statTotal() + 1);
+        if (result == 1) editor.putInt(K_STAT_CORRECT, statCorrect() + 1);
+        if (result == -1) editor.putInt(K_STAT_WRONG, statWrong() + 1);
+        if (isJudge) {
+            editor.putInt(K_STAT_JUDGE, statJudge() + 1);
+            if (result == 1) editor.putInt(K_STAT_JUDGE_CORRECT, statJudgeCorrect() + 1);
+        } else {
+            editor.putInt(K_STAT_SINGLE, statSingle() + 1);
+            if (result == 1) editor.putInt(K_STAT_SINGLE_CORRECT, statSingleCorrect() + 1);
+        }
+        editor.putLong(K_STAT_LAST_DAY, today);
+        editor.putInt(K_STAT_STREAK, newStreak);
+        editor.apply();
+    }
+
+    /** 清空全部答题统计，连续天数与日期一起复位。 */
+    void resetStats() {
+        sp.edit()
+                .remove(K_STAT_TOTAL).remove(K_STAT_CORRECT).remove(K_STAT_WRONG)
+                .remove(K_STAT_SINGLE).remove(K_STAT_SINGLE_CORRECT)
+                .remove(K_STAT_JUDGE).remove(K_STAT_JUDGE_CORRECT)
+                .remove(K_STAT_LAST_DAY).remove(K_STAT_STREAK)
+                .apply();
+    }
 }
